@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Chapter Splitter — split any textbook PDF by unit</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+
+<main id="main" class="shell">
+
+  <div class="spine-bar">
+    <span class="mark">Chapter Splitter</span>
+    <span>PDF → per-unit files</span>
+  </div>
+
+  <section class="hero">
+    <form class="slot" id="splitForm">
+      <div class="slot-row">
+        <label class="field" for="pdfUrl">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <path d="M13.5 6.5L18 11a4 4 0 0 1 0 5.5l-1 1a4 4 0 0 1-5.5 0L7 13" />
+            <path d="M10.5 17.5L6 13a4 4 0 0 1 0-5.5l1-1a4 4 0 0 1 5.5 0L17 11" />
+          </svg>
+          <input
+            type="url"
+            id="pdfUrl"
+            name="pdfUrl"
+            placeholder="https://your-storage.com/textbook.pdf"
+            autocomplete="off"
+            required
+          />
+        </label>
+        <button type="submit" class="btn btn-primary" id="splitBtn">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M8 4l8 8-8 8" />
+          </svg>
+          Split into chapters
+        </button>
+      </div>
+
+      <div class="slot-options">
+        <span>Split by</span>
+        <div class="kw-toggle" id="modeToggle">
+          <button type="button" data-mode="unit" class="active">Unit</button>
+          <button type="button" data-mode="lesson">Lesson</button>
+          <button type="button" data-mode="combined">Both</button>
+        </div>
+        <span class="kw-toggle-sub" id="kwToggleWrap">
+          <span>heading</span>
+          <div class="kw-toggle" id="kwToggle">
+            <button type="button" data-kw="Unit" class="active">Unit</button>
+            <button type="button" data-kw="Chapter">Chapter</button>
+          </div>
+        </span>
+        <button type="button" class="upload-alt" id="uploadAltBtn">or upload a file instead</button>
+        <input type="file" id="fileInput" accept="application/pdf" style="display:none" />
+      </div>
+    </form>
+
+    <div class="status" id="status">
+      <span class="spinner" id="statusSpinner"></span>
+      <span id="statusText">Reading the table of contents…</span>
+    </div>
+
+    <div class="error-panel" id="errorPanel">
+      <strong>Couldn't split that one</strong>
+      <span id="errorText"></span>
+    </div>
+  </section>
+
+  <div class="stitch-divider"></div>
+
+  <section id="resultsSection" style="display:none">
+    <div class="results-head">
+      <div>
+        <h2>Chapters found</h2>
+        <div class="count" id="resultsCount"></div>
+      </div>
+      <a class="download-all" id="downloadAllBtn" href="#">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14" />
+        </svg>
+        Download all (.zip)
+      </a>
+    </div>
+    <div class="cards" id="cardsList"></div>
+  </section>
+
+  <div class="empty-state" id="emptyState">
+    Paste a PDF link above and it'll show up here, split into its chapters.
+  </div>
+
+  <footer class="foot">
+    <span>Built for textbooks that number their units.</span>
+    <span id="jobTag"></span>
+  </footer>
+
+</main>
+
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
