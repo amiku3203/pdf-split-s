@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Chapter Splitter — split any textbook PDF by unit</title>
+<title>PDF Toolkit — split, merge and convert PDFs</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
 </head>
 <body>
@@ -12,12 +12,18 @@
 <main id="main" class="shell">
 
   <div class="spine-bar">
-    <span class="mark">Chapter Splitter</span>
-    <span>PDF → per-unit files</span>
+    <span class="mark">PDF Toolkit</span>
+    <div class="tool-tabs" id="toolTabs">
+      <button type="button" class="tool-tab active" data-tool="split">Split</button>
+      <button type="button" class="tool-tab" data-tool="merge">Merge</button>
+      <button type="button" class="tool-tab" data-tool="convert">Convert</button>
+    </div>
   </div>
 
   <section class="hero">
-    <form class="slot" id="splitForm">
+
+    <!-- ============ SPLIT PANEL ============ -->
+    <form class="slot tool-panel" id="splitForm" data-panel="split">
       <div class="slot-row">
         <label class="field" for="pdfUrl">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
@@ -30,24 +36,35 @@
             name="pdfUrl"
             placeholder="https://your-storage.com/textbook.pdf"
             autocomplete="off"
-            required
           />
         </label>
         <button type="submit" class="btn btn-primary" id="splitBtn">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M8 4l8 8-8 8" />
           </svg>
-          Split into chapters
+          Split
         </button>
       </div>
 
       <div class="slot-options">
         <span>Split by</span>
-        <div class="kw-toggle" id="modeToggle">
-          <button type="button" data-mode="unit" class="active">Unit</button>
-          <button type="button" data-mode="lesson">Lesson</button>
-          <button type="button" data-mode="combined">Both</button>
-        </div>
+        <select class="mode-select" id="modeSelect">
+          <optgroup label="By chapter / lesson (reads the text)">
+            <option value="unit" selected>Unit — whole chapters</option>
+            <option value="lesson">Lesson — numbered sub-topics (1.1, 1.2…)</option>
+            <option value="combined">Unit + Lesson (folders, PDF only)</option>
+            <option value="unit_and_lesson">Unit (whole) + Lesson (folders)</option>
+            <option value="extract_text">Extract Text (folders, .txt only)</option>
+            <option value="combined_with_text">Unit + Lesson + Text (folders, both)</option>
+          </optgroup>
+          <optgroup label="By page count (works on any PDF, even scanned)">
+            <option value="range">Page range (e.g. 1-5, 6-10)</option>
+            <option value="fixed">Fixed pages per file</option>
+            <option value="per_page">Every single page</option>
+            <option value="pages">Select pages visually…</option>
+          </optgroup>
+        </select>
+
         <span class="kw-toggle-sub" id="kwToggleWrap">
           <span>heading</span>
           <div class="kw-toggle" id="kwToggle">
@@ -55,18 +72,118 @@
             <button type="button" data-kw="Chapter">Chapter</button>
           </div>
         </span>
+
+        <span class="kw-toggle-sub hidden" id="rangeInputWrap">
+          <input type="text" id="rangesInput" class="mini-input mini-input-wide" placeholder="e.g. 1-5, 6-10, 11-end" />
+        </span>
+
+        <span class="kw-toggle-sub hidden" id="fixedInputWrap">
+          <span>pages per file</span>
+          <input type="number" id="pagesPerChunkInput" class="mini-input" value="5" min="1" />
+        </span>
+      </div>
+
+      <div class="slot-options">
         <button type="button" class="upload-alt" id="uploadAltBtn">or upload a file instead</button>
         <input type="file" id="fileInput" accept="application/pdf" style="display:none" />
       </div>
     </form>
 
+    <!-- ============ MERGE PANEL ============ -->
+    <form class="slot tool-panel hidden" id="mergeForm" data-panel="merge">
+      <div class="slot-row">
+        <button type="button" class="field field-button" id="pickMergeBtn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <path d="M14 3v5h5M6 3h8l5 5v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" />
+          </svg>
+          <span id="pickMergeLabel">Choose 2 or more PDFs (in order)…</span>
+        </button>
+        <button type="submit" class="btn btn-primary" id="mergeBtn">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M8 4l8 8-8 8" />
+          </svg>
+          Merge
+        </button>
+        <input type="file" id="mergeFilesInput" accept="application/pdf" multiple style="display:none" />
+      </div>
+      <div class="merge-list" id="mergeList"></div>
+      <p class="hint-text">Drag items with the handle to reorder — they'll merge in the order shown.</p>
+    </form>
+
+    <!-- ============ CONVERT PANEL ============ -->
+    <form class="slot tool-panel hidden" id="convertForm" data-panel="convert">
+      <div class="slot-options" style="padding-top:0; margin-bottom:14px;">
+        <span>Convert</span>
+        <div class="kw-toggle" id="convertTypeToggle">
+          <button type="button" data-conv="pdf_to_word" class="active">PDF → Word</button>
+          <button type="button" data-conv="pdf_to_image">PDF → Image</button>
+          <button type="button" data-conv="word_to_pdf">Word → PDF</button>
+          <button type="button" data-conv="image_to_pdf">Image → PDF</button>
+        </div>
+      </div>
+
+      <!-- single-file (URL or upload) row, used by pdf_to_word / pdf_to_image / word_to_pdf -->
+      <div class="slot-row" id="convertSingleRow">
+        <label class="field" for="convertUrl">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <path d="M13.5 6.5L18 11a4 4 0 0 1 0 5.5l-1 1a4 4 0 0 1-5.5 0L7 13" />
+            <path d="M10.5 17.5L6 13a4 4 0 0 1 0-5.5l1-1a4 4 0 0 1 5.5 0L17 11" />
+          </svg>
+          <input
+            type="url"
+            id="convertUrl"
+            placeholder="https://your-storage.com/file.pdf"
+            autocomplete="off"
+          />
+        </label>
+        <button type="submit" class="btn btn-primary" id="convertBtn">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M8 4l8 8-8 8" />
+          </svg>
+          Convert
+        </button>
+      </div>
+
+      <!-- multi-image picker row, used by image_to_pdf -->
+      <div class="slot-row hidden" id="convertMultiRow">
+        <button type="button" class="field field-button" id="pickImagesBtn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <rect x="3" y="3" width="18" height="18" rx="2" />
+            <circle cx="8.5" cy="8.5" r="1.5" />
+            <path d="M21 15l-5-5L5 21" />
+          </svg>
+          <span id="pickImagesLabel">Choose images (in order)…</span>
+        </button>
+        <button type="submit" class="btn btn-primary" id="convertBtnMulti">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M8 4l8 8-8 8" />
+          </svg>
+          Combine
+        </button>
+        <input type="file" id="imagesInput" accept="image/*" multiple style="display:none" />
+      </div>
+
+      <div class="slot-options" id="convertOptionsRow">
+        <span class="kw-toggle-sub hidden" id="imgFormatWrap">
+          <span>format</span>
+          <div class="kw-toggle" id="imgFormatToggle">
+            <button type="button" data-fmt="jpg" class="active">JPG</button>
+            <button type="button" data-fmt="png">PNG</button>
+          </div>
+        </span>
+        <button type="button" class="upload-alt hidden" id="convertUploadAltBtn">or upload a file instead</button>
+        <input type="file" id="convertFileInput" accept="application/pdf" style="display:none" />
+        <span class="note" id="wordToPdfNote">Needs LibreOffice installed on the server running this app.</span>
+      </div>
+    </form>
+
     <div class="status" id="status">
       <span class="spinner" id="statusSpinner"></span>
-      <span id="statusText">Reading the table of contents…</span>
+      <span id="statusText">Working on it…</span>
     </div>
 
     <div class="error-panel" id="errorPanel">
-      <strong>Couldn't split that one</strong>
+      <strong>Couldn't process that one</strong>
       <span id="errorText"></span>
     </div>
   </section>
@@ -76,7 +193,7 @@
   <section id="resultsSection" style="display:none">
     <div class="results-head">
       <div>
-        <h2>Chapters found</h2>
+        <h2 id="resultsTitle">Files ready</h2>
         <div class="count" id="resultsCount"></div>
       </div>
       <a class="download-all" id="downloadAllBtn" href="#">
@@ -90,15 +207,44 @@
   </section>
 
   <div class="empty-state" id="emptyState">
-    Paste a PDF link above and it'll show up here, split into its chapters.
+    Paste a link (or upload a file) above and results will show up here.
   </div>
 
   <footer class="foot">
-    <span>Built for textbooks that number their units.</span>
+    <span>Split, merge and convert — works on textbooks, scanned books, and plain documents alike.</span>
     <span id="jobTag"></span>
   </footer>
 
 </main>
+
+<!-- ============ PAGE PICKER (fullscreen overlay, for "Select pages" mode) ============ -->
+<div class="page-picker hidden" id="pagePicker">
+  <div class="page-picker-toolbar">
+    <button type="button" class="picker-close" id="closePagePickerBtn" aria-label="Close">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M6 6l12 12M18 6L6 18" />
+      </svg>
+    </button>
+    <span class="picker-title">Select pages</span>
+    <span class="picker-spacer"></span>
+    <button type="button" class="upload-alt" id="selectAllBtn">Select all</button>
+    <button type="button" class="upload-alt" id="deselectAllBtn">Deselect all</button>
+    <div class="kw-toggle" id="extractModeToggle">
+      <button type="button" data-combine="false" class="active">Separate files</button>
+      <button type="button" data-combine="true">Combine into one PDF</button>
+    </div>
+  </div>
+  <div class="page-grid" id="pageGrid"></div>
+  <div class="page-picker-footer">
+    <span class="count" id="pagePickerCount"></span>
+    <button type="button" class="btn btn-primary" id="confirmPagesBtn">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M8 4l8 8-8 8" />
+      </svg>
+      Split PDF
+    </button>
+  </div>
+</div>
 
 <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
