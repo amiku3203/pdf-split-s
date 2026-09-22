@@ -370,6 +370,498 @@ def split_pdf_combined(input_path: str, output_dir: str, keyword: str = "Unit"):
     return results
 
 
+def split_pdf_unit_and_lesson(input_path: str, output_dir: str, keyword: str = "Unit"):
+    """
+    Same folder-per-Unit layout as split_pdf_combined, but every unit
+    folder ALWAYS gets the whole-unit PDF too, alongside its lesson-wise
+    breakdown — so you get both granularities together, e.g.:
+
+        01_Introduction_to_Parasite_and_Parasitology/
+            00_Full_Unit.pdf                        <- the entire unit
+            1.1_Parasite_and_Parasitology.pdf        <- just that lesson
+            1.2_Types_of_Parasites.pdf
+
+    (split_pdf_combined only gives the whole-unit file as a *fallback*
+    when no lessons were detected; this one gives it every time.)
+
+    Returns a flat list of dicts, same shape as split_pdf_combined.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    reader = PdfReader(input_path)
+    total_pages = len(reader.pages)
+
+    unit_starts = _find_unit_start_pages(reader, keyword=keyword)
+    if not unit_starts:
+        raise ValueError(
+            f'No "{keyword}" heading found in this PDF, so it can\'t be split that way.'
+        )
+    unit_titles = _find_toc_titles(reader, expected_count=len(unit_starts))
+    lessons = _find_lesson_start_pages(reader)
+
+    unit_boundaries = unit_starts + [total_pages]
+    results = []
+
+    if unit_starts[0] > 0:
+        writer = PdfWriter()
+        for p in range(0, unit_starts[0]):
+            writer.add_page(reader.pages[p])
+        fname = "00_Front_Matter.pdf"
+        with open(os.path.join(output_dir, fname), "wb") as f:
+            writer.write(f)
+        results.append({
+            "title": "Front Matter",
+            "filename": fname,
+            "pages": f"1-{unit_starts[0]}",
+            "group": None,
+        })
+
+    for u_idx, u_start in enumerate(unit_starts):
+        u_end = unit_boundaries[u_idx + 1]
+        u_num = u_idx + 1
+        u_title = unit_titles[u_idx] if u_idx < len(unit_titles) else f"{keyword}_{u_num}"
+        safe_unit_title = _clean_filename(u_title, f"{keyword}_{u_num}")
+        unit_folder_name = f"{u_num:02d}_{safe_unit_title}"
+        unit_folder_path = os.path.join(output_dir, unit_folder_name)
+        os.makedirs(unit_folder_path, exist_ok=True)
+        group_label = f"{keyword} {u_num} \u00b7 {u_title}"
+
+        # the whole unit, every time
+        writer = PdfWriter()
+        for p in range(u_start, u_end):
+            writer.add_page(reader.pages[p])
+        full_fname = "00_Full_Unit.pdf"
+        with open(os.path.join(unit_folder_path, full_fname), "wb") as f:
+            writer.write(f)
+        results.append({
+            "title": f"{u_title} (whole unit)",
+            "filename": f"{unit_folder_name}/{full_fname}",
+            "pages": f"{u_start + 1}-{u_end}",
+            "group": group_label,
+        })
+
+        unit_lessons = [l for l in lessons if u_start <= l["page"] < u_end]
+        if not unit_lessons:
+            continue  # no lessons detected — the whole-unit file above is all there is
+
+        lesson_boundaries = [l["page"] for l in unit_lessons] + [u_end]
+        for l_idx, lesson in enumerate(unit_lessons):
+            l_start = u_start if l_idx == 0 else lesson["page"]
+            l_end = max(lesson_boundaries[l_idx + 1], l_start + 1)
+
+            writer = PdfWriter()
+            for p in range(l_start, l_end):
+                writer.add_page(reader.pages[p])
+
+            number = lesson["number"]
+            title = f"{number} {lesson['title']}"
+            safe_title = _clean_filename(lesson["title"], f"Lesson_{number}")
+            fname = f"{number}_{safe_title}.pdf"
+
+            with open(os.path.join(unit_folder_path, fname), "wb") as f:
+                writer.write(f)
+
+            results.append({
+                "title": title,
+                "filename": f"{unit_folder_name}/{fname}",
+                "pages": f"{l_start + 1}-{l_end}",
+                "group": group_label,
+            })
+
+    return results
+
+
+def extract_text_hierarchy(input_path: str, output_dir: str, keyword: str = "Unit"):
+    """
+    Same Unit -> Lesson detection as split_pdf_combined, but instead of
+    slicing PDF pages, this pulls out the actual TEXT content of each
+    lesson's pages and saves it as a .txt file — e.g.:
+
+        01_Introduction_to_Parasite_and_Parasitology/
+            1.1_Parasite_and_Parasitology.txt   <- real extracted text, not a PDF
+            1.2_Types_of_Parasites.txt
+
+    Returns a flat list of dicts, same shape as split_pdf_combined.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    reader = PdfReader(input_path)
+    total_pages = len(reader.pages)
+
+    unit_starts = _find_unit_start_pages(reader, keyword=keyword)
+    if not unit_starts:
+        raise ValueError(
+            f'No "{keyword}" heading found in this PDF, so it can\'t be split that way.'
+        )
+    unit_titles = _find_toc_titles(reader, expected_count=len(unit_starts))
+    lessons = _find_lesson_start_pages(reader)
+
+    def _text_for_range(start, end):
+        parts = []
+        for p in range(start, end):
+            parts.append(reader.pages[p].extract_text() or "")
+        return "\n\n".join(parts).strip()
+
+    unit_boundaries = unit_starts + [total_pages]
+    results = []
+
+    if unit_starts[0] > 0:
+        fname = "00_Front_Matter.txt"
+        with open(os.path.join(output_dir, fname), "w", encoding="utf-8") as f:
+            f.write(_text_for_range(0, unit_starts[0]))
+        results.append({
+            "title": "Front Matter",
+            "filename": fname,
+            "pages": f"1-{unit_starts[0]}",
+            "group": None,
+        })
+
+    for u_idx, u_start in enumerate(unit_starts):
+        u_end = unit_boundaries[u_idx + 1]
+        u_num = u_idx + 1
+        u_title = unit_titles[u_idx] if u_idx < len(unit_titles) else f"{keyword}_{u_num}"
+        safe_unit_title = _clean_filename(u_title, f"{keyword}_{u_num}")
+        unit_folder_name = f"{u_num:02d}_{safe_unit_title}"
+        unit_folder_path = os.path.join(output_dir, unit_folder_name)
+        os.makedirs(unit_folder_path, exist_ok=True)
+        group_label = f"{keyword} {u_num} \u00b7 {u_title}"
+
+        unit_lessons = [l for l in lessons if u_start <= l["page"] < u_end]
+
+        if not unit_lessons:
+            fname = f"{safe_unit_title}.txt"
+            with open(os.path.join(unit_folder_path, fname), "w", encoding="utf-8") as f:
+                f.write(_text_for_range(u_start, u_end))
+            results.append({
+                "title": u_title,
+                "filename": f"{unit_folder_name}/{fname}",
+                "pages": f"{u_start + 1}-{u_end}",
+                "group": group_label,
+            })
+            continue
+
+        lesson_boundaries = [l["page"] for l in unit_lessons] + [u_end]
+        for l_idx, lesson in enumerate(unit_lessons):
+            l_start = u_start if l_idx == 0 else lesson["page"]
+            l_end = max(lesson_boundaries[l_idx + 1], l_start + 1)
+
+            number = lesson["number"]
+            title = f"{number} {lesson['title']}"
+            safe_title = _clean_filename(lesson["title"], f"Lesson_{number}")
+            fname = f"{number}_{safe_title}.txt"
+
+            with open(os.path.join(unit_folder_path, fname), "w", encoding="utf-8") as f:
+                f.write(_text_for_range(l_start, l_end))
+
+            results.append({
+                "title": title,
+                "filename": f"{unit_folder_name}/{fname}",
+                "pages": f"{l_start + 1}-{l_end}",
+                "group": group_label,
+            })
+
+    return results
+
+
+def split_pdf_combined_with_text(input_path: str, output_dir: str, keyword: str = "Unit"):
+    """
+    Same Unit -> Lesson detection and folder hierarchy as split_pdf_combined,
+    but writes BOTH a .pdf (the actual pages) AND a .txt (the extracted
+    text) for every unit/lesson, side by side in the same folder — e.g.:
+
+        01_Introduction_to_Parasite_and_Parasitology/
+            1.1_Parasite_and_Parasitology.pdf
+            1.1_Parasite_and_Parasitology.txt
+            1.2_Types_of_Parasites.pdf
+            1.2_Types_of_Parasites.txt
+
+    Returns a flat list of dicts, same shape as split_pdf_combined (each
+    unit/lesson contributes two entries: one for the .pdf, one for the .txt).
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    reader = PdfReader(input_path)
+    total_pages = len(reader.pages)
+
+    unit_starts = _find_unit_start_pages(reader, keyword=keyword)
+    if not unit_starts:
+        raise ValueError(
+            f'No "{keyword}" heading found in this PDF, so it can\'t be split that way.'
+        )
+    unit_titles = _find_toc_titles(reader, expected_count=len(unit_starts))
+    lessons = _find_lesson_start_pages(reader)
+
+    def _write_pdf(start, end, path):
+        writer = PdfWriter()
+        for p in range(start, end):
+            writer.add_page(reader.pages[p])
+        with open(path, "wb") as f:
+            writer.write(f)
+
+    def _text_for_range(start, end):
+        parts = [reader.pages[p].extract_text() or "" for p in range(start, end)]
+        return "\n\n".join(parts).strip()
+
+    unit_boundaries = unit_starts + [total_pages]
+    results = []
+
+    if unit_starts[0] > 0:
+        start, end = 0, unit_starts[0]
+        _write_pdf(start, end, os.path.join(output_dir, "00_Front_Matter.pdf"))
+        with open(os.path.join(output_dir, "00_Front_Matter.txt"), "w", encoding="utf-8") as f:
+            f.write(_text_for_range(start, end))
+        for ext in ("pdf", "txt"):
+            results.append({
+                "title": "Front Matter",
+                "filename": f"00_Front_Matter.{ext}",
+                "pages": f"1-{end}",
+                "group": None,
+            })
+
+    for u_idx, u_start in enumerate(unit_starts):
+        u_end = unit_boundaries[u_idx + 1]
+        u_num = u_idx + 1
+        u_title = unit_titles[u_idx] if u_idx < len(unit_titles) else f"{keyword}_{u_num}"
+        safe_unit_title = _clean_filename(u_title, f"{keyword}_{u_num}")
+        unit_folder_name = f"{u_num:02d}_{safe_unit_title}"
+        unit_folder_path = os.path.join(output_dir, unit_folder_name)
+        os.makedirs(unit_folder_path, exist_ok=True)
+        group_label = f"{keyword} {u_num} \u00b7 {u_title}"
+
+        unit_lessons = [l for l in lessons if u_start <= l["page"] < u_end]
+
+        if not unit_lessons:
+            _write_pdf(u_start, u_end, os.path.join(unit_folder_path, f"{safe_unit_title}.pdf"))
+            with open(os.path.join(unit_folder_path, f"{safe_unit_title}.txt"), "w", encoding="utf-8") as f:
+                f.write(_text_for_range(u_start, u_end))
+            for ext in ("pdf", "txt"):
+                results.append({
+                    "title": u_title,
+                    "filename": f"{unit_folder_name}/{safe_unit_title}.{ext}",
+                    "pages": f"{u_start + 1}-{u_end}",
+                    "group": group_label,
+                })
+            continue
+
+        lesson_boundaries = [l["page"] for l in unit_lessons] + [u_end]
+        for l_idx, lesson in enumerate(unit_lessons):
+            l_start = u_start if l_idx == 0 else lesson["page"]
+            l_end = max(lesson_boundaries[l_idx + 1], l_start + 1)
+
+            number = lesson["number"]
+            title = f"{number} {lesson['title']}"
+            safe_title = _clean_filename(lesson["title"], f"Lesson_{number}")
+            base_name = f"{number}_{safe_title}"
+
+            _write_pdf(l_start, l_end, os.path.join(unit_folder_path, f"{base_name}.pdf"))
+            with open(os.path.join(unit_folder_path, f"{base_name}.txt"), "w", encoding="utf-8") as f:
+                f.write(_text_for_range(l_start, l_end))
+
+            for ext in ("pdf", "txt"):
+                results.append({
+                    "title": title,
+                    "filename": f"{unit_folder_name}/{base_name}.{ext}",
+                    "pages": f"{l_start + 1}-{l_end}",
+                    "group": group_label,
+                })
+
+    return results
+
+
+def _parse_page_ranges(ranges_str: str, total_pages: int):
+    """
+    Parse a string like "1-5, 6-10, 15-end" (1-indexed, inclusive) into a
+    list of (start_0idx, end_0idx_exclusive) tuples.
+    """
+    parts = [p.strip() for p in ranges_str.split(",") if p.strip()]
+    if not parts:
+        raise ValueError("No page ranges given (e.g. \"1-5, 6-10\").")
+
+    parsed = []
+    for part in parts:
+        m = re.match(r"^(\d+)\s*-\s*(\d+|end)$", part, re.IGNORECASE)
+        if m:
+            start = int(m.group(1))
+            end = total_pages if m.group(2).lower() == "end" else int(m.group(2))
+        elif re.match(r"^\d+$", part):
+            start = end = int(part)
+        else:
+            raise ValueError(f'Could not understand the range "{part}". Use something like "1-5, 6-10".')
+
+        if start < 1 or end > total_pages or start > end:
+            raise ValueError(f'Range "{part}" is out of bounds for a {total_pages}-page PDF.')
+        parsed.append((start - 1, end))  # 0-indexed, end exclusive
+    return parsed
+
+
+def split_pdf_by_range(input_path: str, output_dir: str, ranges_str: str):
+    """
+    Splits input_path into one PDF per page-range the caller specifies,
+    e.g. ranges_str="1-5, 6-10, 11-end" — works on ANY PDF, scanned or not,
+    since it doesn't try to read the content at all.
+
+    Returns a list of dicts: [{"title": ..., "filename": ..., "pages": "1-5"}, ...]
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    reader = PdfReader(input_path)
+    total_pages = len(reader.pages)
+
+    ranges = _parse_page_ranges(ranges_str, total_pages)
+    results = []
+    for idx, (start, end) in enumerate(ranges):
+        writer = PdfWriter()
+        for p in range(start, end):
+            writer.add_page(reader.pages[p])
+        fname = f"Pages_{start + 1}-{end}.pdf"
+        with open(os.path.join(output_dir, fname), "wb") as f:
+            writer.write(f)
+        results.append({
+            "title": f"Pages {start + 1}\u2013{end}",
+            "filename": fname,
+            "pages": f"{start + 1}-{end}",
+        })
+    return results
+
+
+def split_pdf_fixed(input_path: str, output_dir: str, pages_per_chunk: int):
+    """
+    Splits input_path into equal-sized chunks of `pages_per_chunk` pages
+    each — works on ANY PDF (scanned, text, mixed) since it never reads
+    the content, just counts pages. Good fallback when a book has no
+    machine-readable structure (e.g. a scanned nursery workbook).
+
+    Returns a list of dicts: [{"title": ..., "filename": ..., "pages": "1-5"}, ...]
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    reader = PdfReader(input_path)
+    total_pages = len(reader.pages)
+
+    if pages_per_chunk < 1:
+        raise ValueError("Pages per file must be at least 1.")
+
+    results = []
+    part = 1
+    for start in range(0, total_pages, pages_per_chunk):
+        end = min(start + pages_per_chunk, total_pages)
+        writer = PdfWriter()
+        for p in range(start, end):
+            writer.add_page(reader.pages[p])
+        fname = f"Part_{part:02d}_Pages_{start + 1}-{end}.pdf"
+        with open(os.path.join(output_dir, fname), "wb") as f:
+            writer.write(f)
+        results.append({
+            "title": f"Part {part} (pages {start + 1}\u2013{end})",
+            "filename": fname,
+            "pages": f"{start + 1}-{end}",
+        })
+        part += 1
+    return results
+
+
+def split_pdf_per_page(input_path: str, output_dir: str):
+    """
+    Splits input_path into one PDF per single page. Works on any PDF.
+
+    Returns a list of dicts: [{"title": ..., "filename": ..., "pages": "1-1"}, ...]
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    reader = PdfReader(input_path)
+    total_pages = len(reader.pages)
+
+    results = []
+    for i in range(total_pages):
+        writer = PdfWriter()
+        writer.add_page(reader.pages[i])
+        fname = f"Page_{i + 1:03d}.pdf"
+        with open(os.path.join(output_dir, fname), "wb") as f:
+            writer.write(f)
+        results.append({
+            "title": f"Page {i + 1}",
+            "filename": fname,
+            "pages": f"{i + 1}-{i + 1}",
+        })
+    return results
+
+
+def extract_selected_pages(input_path: str, output_dir: str, pages, combine: bool = False):
+    """
+    Extracts specific pages (1-indexed, order matters) chosen visually by
+    the user — e.g. from a thumbnail-grid picker.
+
+    combine=False -> one PDF per selected page (in the order given)
+    combine=True  -> a single PDF containing just the selected pages, in
+                     that order
+
+    Returns a list of dicts like the other split_* functions.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    reader = PdfReader(input_path)
+    total_pages = len(reader.pages)
+
+    if not pages:
+        raise ValueError("No pages were selected.")
+
+    for p in pages:
+        if p < 1 or p > total_pages:
+            raise ValueError(f"Page {p} is out of range for a {total_pages}-page PDF.")
+
+    if combine:
+        writer = PdfWriter()
+        for p in pages:
+            writer.add_page(reader.pages[p - 1])
+        fname = "Selected_Pages.pdf"
+        with open(os.path.join(output_dir, fname), "wb") as f:
+            writer.write(f)
+        return [{
+            "title": f"Selected pages ({len(pages)} page{'s' if len(pages) != 1 else ''})",
+            "filename": fname,
+            "pages": ",".join(str(p) for p in pages),
+        }]
+
+    results = []
+    for p in pages:
+        writer = PdfWriter()
+        writer.add_page(reader.pages[p - 1])
+        fname = f"Page_{p:03d}.pdf"
+        with open(os.path.join(output_dir, fname), "wb") as f:
+            writer.write(f)
+        results.append({
+            "title": f"Page {p}",
+            "filename": fname,
+            "pages": f"{p}-{p}",
+        })
+    return results
+
+
+def merge_pdfs(input_paths, output_dir: str, output_name: str = "Merged.pdf"):
+    """
+    Merges multiple PDFs (in the order given) into a single PDF.
+
+    Returns a list with one dict: [{"title": ..., "filename": ..., "pages": "1-N"}]
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    if not input_paths:
+        raise ValueError("No PDFs were provided to merge.")
+    if len(input_paths) < 2:
+        raise ValueError("Add at least 2 PDFs to merge.")
+
+    writer = PdfWriter()
+    total_pages = 0
+    for path in input_paths:
+        reader = PdfReader(path)
+        for page in reader.pages:
+            writer.add_page(page)
+        total_pages += len(reader.pages)
+
+    fname = output_name if output_name.lower().endswith(".pdf") else f"{output_name}.pdf"
+    out_path = os.path.join(output_dir, fname)
+    with open(out_path, "wb") as f:
+        writer.write(f)
+
+    return [{
+        "title": f"Merged PDF ({len(input_paths)} files, {total_pages} pages)",
+        "filename": fname,
+        "pages": f"1-{total_pages}",
+    }]
+
+
 if __name__ == "__main__":
     # quick manual test
     import sys
