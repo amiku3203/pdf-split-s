@@ -18,10 +18,12 @@ Each job gets a uuid so multiple users/files don't collide.
 """
 
 import os
+import re
 import uuid
 import zipfile
 import requests
 from flask import Flask, request, jsonify, send_from_directory, render_template
+from flask_cors import CORS
 
 from pdf_splitter import (
     split_pdf_by_unit,
@@ -46,6 +48,24 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 150 * 1024 * 1024  # 150 MB cap
+
+# Allowed origins for CORS (no trailing slashes)
+ALLOWED_ORIGINS = [
+    "https://crm.smatoroai.com",
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "http://localhost:5000",
+    "http://127.0.0.1:5173",
+    re.compile(r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"),
+]
+
+CORS(
+    app,
+    resources={r"/*": {"origins": ALLOWED_ORIGINS}},
+    supports_credentials=True,
+    methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-Requested-With"],
+)
 
 
 @app.route("/")
