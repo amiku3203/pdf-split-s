@@ -1,0 +1,11 @@
+Flask>=3.0
+pypdf>=4.0
+requests>=2.31
+gunicorn>=21.2
+pymupdf>=1.24
+pdf2docx>=0.5.8
+pillow>=10.0
+npttf2utf>=0.3.7
+pytesseract>=0.3.10
+rapidfuzz>=3.0
+spylls>=0.1.7

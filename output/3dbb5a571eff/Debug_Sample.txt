@@ -1,0 +1,169 @@
+auto-detected maps: {'himalb': ('Preeti', 1.0), 'ganess': ('Preeti', 1.0), 'aakriti': ('Preeti', 0.99)}
+
+=== page 1 ===
+b0 l0 font=Himalb map=Preeti size=14.0
+   raw =';fdflhs cWoog tyf dfgjd"No lzIff, sIff *'
+   conv='सामाजिक अध्ययन तथा मानवमूल्य शिक्षा, कक्षा ८'
+b0 l0 font=Himalb map=Preeti size=14.0
+   raw ='\t'
+   conv='\t'
+b0 l1 font=FontasyHimali map=None size=10.5
+   raw ='1 '
+   conv=''
+b1 l0 font=Ganess map=Preeti size=30.0
+   raw =';fdflhs cWoog tyf \n'
+   conv='सामाजिक अध्ययन तथा \n'
+b2 l0 font=Ganess map=Preeti size=30.0
+   raw ='dfgjd"No lzIff'
+   conv='मानवमूल्य शिक्षा'
+b3 l0 font=Ganess map=Preeti size=22.0
+   raw ='sIff *'
+   conv='कक्षा ८'
+b4 l0 font=Himalb map=Preeti size=12.0
+   raw ='g]\x03kfn ;/\x03sf/\x03'
+   conv='नेपाल सरकार'
+b4 l1 font=Himalb map=Preeti size=14.0
+   raw ='lzIff, lj1fg tyf k|ljlw dGqfno'
+   conv='शिक्षा, विज्ञान तथा प्रविधि मन्त्रालय'
+b5 l0 font=Ganess map=Preeti size=16.0
+   raw ='kf7\\oj|md ljsf; s]\x03Gb|'
+   conv='पाठ्यक्रम विकास केन्द्र'
+b6 l0 font=Himalb map=Preeti size=12.0
+   raw =";fgf]\x03l7dL, eStk'/\x03"
+   conv='सानोठिमी, भक्तपुर'
+=== page 2 ===
+b0 l0 font=FontasyHimali map=None size=10.5
+   raw ='2 '
+   conv=''
+b0 l0 font=Himalb map=Preeti size=12.0
+   raw ='\t'
+   conv='\t'
+b0 l1 font=Himalb map=Preeti size=12.0
+   raw ='\t'
+   conv='\t'
+b0 l2 font=Himalb map=Preeti size=12.0
+   raw ='\t'
+   conv='\t'
+b0 l3 font=Himalb map=Preeti size=12.0
+   raw ='\t'
+   conv='\t'
+b0 l4 font=Himalb map=Preeti size=12.0
+   raw ='\t'
+   conv='\t'
+b0 l5 font=Himalb map=Preeti size=12.0
+   raw ='\x08'
+   conv=''
+b0 l6 font=Himalb map=Preeti size=14.0
+   raw =';fdflhs cWoog tyf dfgjd"No lzIff, sIff *'
+   conv='सामाजिक अध्ययन तथा मानवमूल्य शिक्षा, कक्षा ८'
+b1 l0 font=Himalb map=Preeti size=14.0
+   raw ='k|sfzs'
+   conv='प्रकाशक'
+b2 l0 font=Himalb map=Preeti size=14.0
+   raw ='g]\x03kfn ;/\x03sf/\x03\n'
+   conv='नेपाल सरकार\n'
+b2 l1 font=Himalb map=Preeti size=14.0
+   raw ='lzIff, lj1fg tyf k|ljlw dGqfno\n'
+   conv='शिक्षा, विज्ञान तथा प्रविधि मन्त्रालय\n'
+b2 l2 font=Himalb map=Preeti size=16.0
+   raw ='kf7\\oj|md ljsf; s]\x03Gb|\n'
+   conv='पाठ्यक्रम विकास केन्द्र\n'
+b2 l3 font=Himalb map=Preeti size=14.0
+   raw =";fgf]\x03l7dL, eStk'/\x03 "
+   conv='सानोठिमी, भक्तपुर '
+b3 l0 font=ArialMT map=None size=13.0
+   raw ='©'
+   conv=''
+b3 l0 font=PathyakramFontnormal map=None size=14.0
+   raw ='\t'
+   conv=''
+b3 l1 font=PreetiBold map=Preeti size=14.0
+   raw ='kf7\\oj|md ljsf; s]\x03Gb|'
+   conv='पाठ्यक्रम विकास केन्द्र'
+b4 l0 font=Himalb map=Preeti size=14.0
+   raw ='o; kf7\\ok\':\x03ts;DaGwL ;Dk"0f{ clwsf/\x03 kf7\\oj|md ljsf; s]\x03Gb| ;fgf]\x03l7dL, eStk\'/\x03df lglxt '
+   conv='यस पाठ्यपुस्तकसम्बन्धी सम्पूर्ण अधिकार पाठ्यक्रम विकास केन्द्र सानोठिमी, भक्तपुरमा निहित '
+b4 l1 font=Himalb map=Preeti size=14.0
+   raw ='5\u202f. kf7\\oj|md ljsf; s]\x03Gb|sf]\x03 lnlvt :\x03jLs[ltljgf Jofkfl/\x03s k|of]\x03hgsf nflu o;sf]\x03 k"/\x03}\x03 '
+   conv='छ\u202f। पाठ्यक्रम विकास केन्द्रको लिखित स्वीकृतिविना व्यापारिक प्रयोजनका लागि यसको पूरै '
+b4 l2 font=Himalb map=Preeti size=14.0
+   raw ="jf cf+lzs efu x'ax' k|sfzg ug{, kl/\x03jt{g u/\x03]\x03/\x03 k|sfzg ug{, s'g}\x03 ljB'tLo ;fwg jf cGo "
+   conv='वा आंशिक भाग हुबहु प्रकाशन गर्न, परिवर्तन गरेर प्रकाशन गर्न, कुनै विद्युतीय साधन वा अन्य '
+b4 l3 font=Himalb map=Preeti size=14.0
+   raw ='k|ljlwaf6 /\x03]\x03s8{ ug{ /\x03 k|ltlnlk lgsfNg kfOg]\x03 5}\x03g\u202f.'
+   conv='प्रविधिबाट रेकर्ड गर्न र प्रतिलिपि निकाल्न पाइने छैन\u202f।'
+b5 l0 font=Himalb map=Preeti size=14.0
+   raw ='k|yd ;+:s/0f\t'
+   conv='प्रथम संस्करण\t'
+b5 l1 font=Himalb map=Preeti size=14.0
+   raw ='M\t'
+   conv=':\t'
+b5 l2 font=Himalb map=Preeti size=14.0
+   raw ='lj=;+= @)*)'
+   conv='वि.सं. २०८०'
+b5 l3 font=Himalb map=Preeti size=14.0
+   raw ='kl/dflh{t ;+:s/0f\t'
+   conv='परिमार्जित संस्करण\t'
+b5 l3 font=Himalb map=Preeti size=14.0
+   raw =' '
+   conv=' '
+b5 l3 font=Himalb map=Preeti size=14.0
+   raw ='M\t'
+   conv=':\t'
+b5 l4 font=Himalb map=Preeti size=14.0
+   raw ='lj=;+= @)*@'
+   conv='वि.सं. २०८२'
+b6 l0 font=Himalb map=Preeti size=14.0
+   raw ="d'b|0f\t"
+   conv='मुद्रण\t'
+b6 l1 font=Himalb map=Preeti size=14.0
+   raw ='M \t'
+   conv=': \t'
+b6 l2 font=Himalb map=Preeti size=14.0
+   raw ='hgs lzIff ;fdu|L s]Gb| ln='
+   conv='जनक शिक्षा सामग्री केन्द्र लि.'
+b6 l3 font=Himalb map=Preeti size=14.0
+   raw ='\t'
+   conv='\t'
+b6 l4 font=Himalb map=Preeti size=14.0
+   raw ='\t'
+   conv='\t'
+b6 l5 font=Himalb map=Preeti size=14.0
+   raw =";fgf]l7dL, eStk'/"
+   conv='सानोठिमी, भक्तपुर'
+b7 l0 font=Himalb map=Preeti size=14.0
+   raw ='d"No ?=\t'
+   conv='मूल्य रु.\t'
+b7 l1 font=Himalb map=Preeti size=14.0
+   raw ='M'
+   conv=':'
+b8 l0 font=Himalb map=Preeti size=14.0
+   raw ="kf7\\ok':ts;DaGwL kf7ssf s'g} klg k|sf/sf ;'emfj ePdf kf7\\oj|md ljsf; s]Gb|, ;dGjo "
+   conv='पाठ्यपुस्तकसम्बन्धी पाठकका कुनै पनि प्रकारका सुझाव भएमा पाठ्यक्रम विकास केन्द्र, समन्वय '
+b8 l1 font=Himalb map=Preeti size=14.0
+   raw ="tyf k|sfzg zfvfdf k7fOlbgx'g cg'/f]w 5 . kf7saf6 cfpg] ;'emfjnfO{ s]Gb| xflb{s "
+   conv='तथा प्रकाशन शाखामा पठाइदिनहुन अनुरोध छ । पाठकबाट आउने सुझावलाई केन्द्र हार्दिक '
+b8 l2 font=Himalb map=Preeti size=14.0
+   raw =':jfut u5{ .'
+   conv='स्वागत गर्छ ।'
+
+##### spans that still convert to suspicious text #####
+=== page 11 ===
+b6 l4 font=Preeti map=Preeti size=16.0
+   raw ='ePsf b]\x03zx¿ ljsl;t b]\x03zsf]\x03 >]\x030fLdf k5{g\\\u202f. cd]\x03l/\x03sf, hfkfg, k|mfG; '
+   conv='भएका देशहरू विकसित देशको श्रेणीमा पर्छन्\u202f। अमेरिका, जापान, फ्रान्स '
+=== page 49 ===
+b4 l10 font=Preeti map=Preeti size=16.0
+   raw ='/\x03 k|mfG;larsf]\x03 ;f]\x03Nkm]\x03l/\x03gf]\x03sf]\x03 '
+   conv='र फ्रान्सबिचको सोल्फेरिनोको '
+=== page 117 ===
+b5 l5 font=Preeti map=Preeti size=16.0
+   raw ='O6nL, :\x03k]\x03g, hd{gL, k|mfG;, lu|;, ld> '
+   conv='इटली, स्पेन, जर्मनी, फ्रान्स, ग्रिस, मिश्र '
+=== page 209 ===
+b4 l6 font=Preeti map=Preeti size=16.0
+   raw ='k|mfG; pkljh]\x03tfsf ¿kdf /\x03x\\of]\x03\u202f. o; k|ltof]\x03lutfdf klxnf]\x03rf]\x03l6 clk|msg l6d df]\x03/\x03Ssf]\x03 '
+   conv='फ्रान्स उपविजेताका रूपमा रह्यो\u202f। यस प्रतियोगितामा पहिलोचोटि अफ्रिकन टिम मोरक्को '
+b4 l7 font=Preeti map=Preeti size=16.0
+   raw =';]\x03dLkmfOgndf k|j]\x03z u/\x03]\x03sf]\x03 lyof]\x03\u202f. o; k|ltof]\x03lutfdf k|mfG;sf v]\x03nf8L PDjfKk]\x03n]\x03 '
+   conv='सेमीफाइनलमा प्रवेश गरेको थियो\u202f। यस प्रतियोगितामा फ्रान्सका खेलाडी एम्वाप्पेले '
