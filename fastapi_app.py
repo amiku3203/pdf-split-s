@@ -1,46 +1,81 @@
 """
 fastapi_app.py
 --------------
-FastAPI backend service for high-performance, memory-safe large PDF compression.
-
-Features:
-- Handles 300MB - 2GB+ PDFs using 10MB streaming chunk uploads (avoids 413 limits).
-- Provides lossless and visually-lossless PDF compression without degrading text sharpness.
-- Streams output downloads in chunks to keep server memory footprint constant (~15MB).
-- Strict input validation, path sanitization, and PDF magic byte verification (%PDF-).
+Unified FastAPI backend for the PDF Toolkit:
+- PDF Split: Unit, Lesson, Combined, Range, Fixed, Per-page, Nepali text & spellcheck, Visual page picker, Manual sections
+- PDF Merge: Multi-PDF upload with drag-and-drop custom ordering
+- PDF Convert: PDF to Word, PDF to Image, Word to PDF, Image to PDF
+- PDF Compress: Lossless and visually-lossless stream & font deflation, keeping text/vector paths razor-sharp (<100MB guaranteed)
+- Streaming Chunked Upload: 10MB chunk pipeline with automatic server-side compression upon assembly before saving
+- Direct Downloads and Full-Job Zip Downloads
 """
 
+import gc
+import json
 import logging
 import os
 import re
 import shutil
 import uuid
+import zipfile
 from pathlib import Path
 from typing import Optional, Literal
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, status, Query
-from fastapi.responses import FileResponse, StreamingResponse, HTMLResponse
-from fastapi.middleware.cors import CORSMiddleware
-from starlette.concurrency import run_in_threadpool
-from pydantic import BaseModel, Field
+from urllib.parse import quote
 
+import pymupdf
+import requests
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from starlette.concurrency import run_in_threadpool
+
+from pdf_splitter import (
+    split_pdf_by_unit,
+    split_pdf_by_lesson,
+    split_pdf_combined,
+    split_pdf_unit_and_lesson,
+    extract_text_hierarchy,
+    split_pdf_combined_with_text,
+    split_pdf_by_range,
+    split_pdf_fixed,
+    split_pdf_per_page,
+    extract_selected_pages,
+    merge_pdfs,
+)
+from nepali_text import extract_nepali_text_hierarchy, add_custom_word, _safe_name
+from pdf_converter import (
+    pdf_to_images,
+    images_to_pdf,
+    pdf_to_word,
+    word_to_pdf,
+    generate_thumbnails,
+    generate_single_thumbnail,
+)
 from pdf_compressor import compress_pdf
 
 logger = logging.getLogger("fastapi_app")
+logging.basicConfig(level=logging.INFO)
 
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = BASE_DIR / "uploads"
 OUTPUT_DIR = BASE_DIR / "output"
+STATIC_DIR = BASE_DIR / "static"
+TEMPLATES_DIR = BASE_DIR / "templates"
 
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+STATIC_DIR.mkdir(parents=True, exist_ok=True)
+TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(
-    title="Large PDF Compression Service",
-    description="High-performance lossless and visually-lossless PDF compression using streaming I/O.",
-    version="1.0.0",
+    title="PDF Toolkit & Compressor",
+    description="Unified high-performance PDF Toolkit: Split, Merge, Convert, and Lossless Compression with Chunked Streaming.",
+    version="2.0.0",
 )
 
-# Enable CORS for browser integration
+# Enable CORS for frontend and external clients
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -49,467 +84,277 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Mount static files
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
-INDEX_HTML = """<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>PDF Compressor — High Quality Optimization</title>
-<style>
-  :root {
-    --bg: #141b22;
-    --card: #1c2530;
-    --border: #2e3a47;
-    --accent: #d4a359;
-    --accent-hover: #e5b369;
-    --text: #f0ede6;
-    --text-dim: #9aa3af;
-    --success: #4ade80;
-  }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body {
-    background: var(--bg);
-    color: var(--text);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    padding: 20px;
-  }
-  .container {
-    width: 100%;
-    max-width: 620px;
-    background: var(--card);
-    border: 1px solid var(--border);
-    border-radius: 14px;
-    padding: 32px;
-    box-shadow: 0 10px 30px rgba(0,0,0,0.4);
-  }
-  h1 { font-size: 24px; font-weight: 700; margin-bottom: 6px; color: var(--accent); }
-  p.subtitle { color: var(--text-dim); font-size: 14px; margin-bottom: 24px; line-height: 1.4; }
-  .dropzone {
-    border: 2px dashed var(--border);
-    border-radius: 10px;
-    padding: 34px 20px;
-    text-align: center;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    background: rgba(255,255,255,0.02);
-  }
-  .dropzone:hover, .dropzone.dragover {
-    border-color: var(--accent);
-    background: rgba(212, 163, 89, 0.08);
-  }
-  .dropzone svg { width: 44px; height: 44px; stroke: var(--accent); fill: none; margin-bottom: 12px; }
-  .drop-text { font-size: 15px; font-weight: 500; margin-bottom: 4px; }
-  .drop-hint { font-size: 12px; color: var(--text-dim); }
-  .file-preview {
-    margin-top: 18px;
-    padding: 12px 16px;
-    background: rgba(212, 163, 89, 0.12);
-    border: 1px solid var(--accent);
-    border-radius: 8px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    font-size: 14px;
-  }
-  .file-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 380px; }
-  .options { margin-top: 22px; display: flex; flex-direction: column; gap: 14px; }
-  label { font-size: 13px; font-weight: 500; color: var(--text-dim); margin-bottom: 4px; display: block; }
-  select, input[type=range] {
-    width: 100%;
-    padding: 10px;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    color: var(--text);
-    font-size: 14px;
-    outline: none;
-  }
-  .btn {
-    width: 100%;
-    margin-top: 24px;
-    padding: 14px;
-    background: var(--accent);
-    color: #141b22;
-    border: none;
-    border-radius: 8px;
-    font-size: 16px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: background 0.2s;
-  }
-  .btn:hover:not(:disabled) { background: var(--accent-hover); }
-  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-  .progress-wrap { margin-top: 20px; display: none; }
-  .progress-bar-bg { width: 100%; height: 8px; background: var(--bg); border-radius: 4px; overflow: hidden; margin-top: 8px; }
-  .progress-bar-fill { width: 0%; height: 100%; background: var(--accent); transition: width 0.2s ease; }
-  .progress-text { font-size: 13px; color: var(--text-dim); display: flex; justify-content: space-between; }
-  .result-card {
-    margin-top: 24px;
-    background: rgba(74, 222, 128, 0.08);
-    border: 1px solid var(--success);
-    border-radius: 10px;
-    padding: 20px;
-    display: none;
-  }
-  .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 14px 0; }
-  .stat-box { background: var(--bg); padding: 10px 14px; border-radius: 6px; }
-  .stat-label { font-size: 12px; color: var(--text-dim); }
-  .stat-val { font-size: 16px; font-weight: 700; color: var(--text); }
-  .stat-val.highlight { color: var(--success); }
-  .actions { display: flex; gap: 10px; margin-top: 16px; }
-  .btn-action {
-    flex: 1;
-    padding: 11px;
-    text-align: center;
-    border-radius: 6px;
-    font-size: 14px;
-    font-weight: 600;
-    text-decoration: none;
-    cursor: pointer;
-    transition: opacity 0.2s;
-  }
-  .btn-download { background: var(--success); color: #0d2818; }
-  .btn-view { background: transparent; border: 1px solid var(--border); color: var(--text); }
-  .btn-view:hover { border-color: var(--text); }
-  .hidden { display: none !important; }
-</style>
-</head>
-<body>
-<div class="container">
-  <h1>PDF Compressor</h1>
-  <p class="subtitle">Lossless and visually-lossless optimization for large PDFs without losing text or formula sharpness.</p>
+# Jinja2 templates configuration with custom url_for supporting both Flask and FastAPI syntax
+templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
-  <div class="dropzone" id="dropzone">
-    <svg viewBox="0 0 24 24" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
-    <div class="drop-text">Click to choose PDF or drag & drop here</div>
-    <div class="drop-hint">Supports large files (345MB+) with automatic chunked streaming</div>
-    <input type="file" id="fileInput" accept="application/pdf" class="hidden" />
-  </div>
 
-  <div class="file-preview hidden" id="filePreview">
-    <span class="file-name" id="fileName">file.pdf</span>
-    <span style="color:var(--accent); font-weight:600;" id="fileSize">0 MB</span>
-  </div>
+def _custom_url_for(name: str, **params) -> str:
+    if name == "static":
+        filename = params.get("filename") or params.get("path", "")
+        return f"/static/{filename}"
+    return f"/{name}"
 
-  <div class="options">
-    <div>
-      <label for="modeSelect">Compression Mode</label>
-      <select id="modeSelect">
-        <option value="visually_lossless" selected>Visually Lossless (High Reduction • Razor-sharp text & optimized images)</option>
-        <option value="lossless">Strict Lossless (Structural deflation & deduplication only)</option>
-      </select>
-    </div>
-    <div id="qualityWrap">
-      <label for="qualitySlider">Image Quality: <span id="qualityVal">90</span>%</label>
-      <input type="range" id="qualitySlider" min="50" max="98" value="90" />
-    </div>
-  </div>
 
-  <button class="btn" id="compressBtn" disabled>Compress PDF</button>
+templates.env.globals["url_for"] = _custom_url_for
 
-  <div class="progress-wrap" id="progressWrap">
-    <div class="progress-text">
-      <span id="progressStatus">Uploading...</span>
-      <span id="progressPercent">0%</span>
-    </div>
-    <div class="progress-bar-bg">
-      <div class="progress-bar-fill" id="progressBar"></div>
-    </div>
-  </div>
 
-  <div class="result-card" id="resultCard">
-    <h3 style="color:var(--success); font-size:16px;">Compression Complete!</h3>
-    <div class="stats-grid">
-      <div class="stat-box"><div class="stat-label">Original Size</div><div class="stat-val" id="resOrig">0 MB</div></div>
-      <div class="stat-box"><div class="stat-label">Compressed Size</div><div class="stat-val" id="resComp">0 MB</div></div>
-      <div class="stat-box"><div class="stat-label">Saved Space</div><div class="stat-val highlight" id="resSaved">0 MB</div></div>
-      <div class="stat-box"><div class="stat-label">Reduction</div><div class="stat-val highlight" id="resPct">0%</div></div>
-    </div>
-    <div class="actions">
-      <a class="btn-action btn-download" id="downloadBtn" href="#" download>Download PDF</a>
-      <a class="btn-action btn-view" id="viewBtn" href="#" target="_blank">View in Tab</a>
-    </div>
-  </div>
-</div>
+# ------------------------------------------------------------- HELPERS ---
 
-<script>
-  const dropzone = document.getElementById('dropzone');
-  const fileInput = document.getElementById('fileInput');
-  const filePreview = document.getElementById('filePreview');
-  const fileName = document.getElementById('fileName');
-  const fileSize = document.getElementById('fileSize');
-  const modeSelect = document.getElementById('modeSelect');
-  const qualityWrap = document.getElementById('qualityWrap');
-  const qualitySlider = document.getElementById('qualitySlider');
-  const qualityVal = document.getElementById('qualityVal');
-  const compressBtn = document.getElementById('compressBtn');
-  const progressWrap = document.getElementById('progressWrap');
-  const progressStatus = document.getElementById('progressStatus');
-  const progressPercent = document.getElementById('progressPercent');
-  const progressBar = document.getElementById('progressBar');
-  const resultCard = document.getElementById('resultCard');
+def _valid_job_id(job_id: str) -> bool:
+    return bool(job_id and isinstance(job_id, str) and re.fullmatch(r"[0-9a-zA-Z_\-]+", job_id))
 
-  let selectedFile = null;
 
-  dropzone.addEventListener('click', () => fileInput.click());
-  fileInput.addEventListener('change', () => {
-    if (fileInput.files && fileInput.files[0]) handleFile(fileInput.files[0]);
-  });
+def _new_job() -> tuple[str, Path]:
+    job_id = uuid.uuid4().hex[:12]
+    job_output_dir = OUTPUT_DIR / job_id
+    job_output_dir.mkdir(parents=True, exist_ok=True)
+    return job_id, job_output_dir
 
-  ['dragenter', 'dragover'].forEach(name => {
-    dropzone.addEventListener(name, (e) => { e.preventDefault(); dropzone.classList.add('dragover'); });
-  });
-  ['dragleave', 'drop'].forEach(name => {
-    dropzone.addEventListener(name, (e) => { e.preventDefault(); dropzone.classList.remove('dragover'); });
-  });
-  dropzone.addEventListener('drop', (e) => {
-    if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]) {
-      handleFile(e.dataTransfer.files[0]);
+
+def _find_job_source(job_id: str) -> Path:
+    matches = list(UPLOAD_DIR.glob(f"{job_id}_source.*"))
+    if not matches:
+        raise HTTPException(
+            status_code=404,
+            detail="Couldn't find the uploaded file for this job — try loading the pages again."
+        )
+    return matches[0]
+
+
+def _fetch_from_url(url: str, dest_path: Path):
+    with requests.get(url, stream=True, timeout=(30, 600)) as resp:
+        resp.raise_for_status()
+        with open(dest_path, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                if chunk:
+                    f.write(chunk)
+
+
+async def _parse_request_data(request: Request):
+    """
+    Parses request body whether JSON or multipart/form-data.
+    Returns (dict_data, form_files, single_file).
+    """
+    ct = request.headers.get("content-type", "")
+    data = {}
+    files = []
+    file = None
+
+    if "application/json" in ct:
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+    elif "multipart/form-data" in ct or "application/x-www-form-urlencoded" in ct:
+        form = await request.form()
+        for k, v in form.items():
+            if hasattr(v, "filename"):
+                if k == "file":
+                    file = v
+            else:
+                data[k] = v
+        files = form.getlist("files")
+        if not file and "file" in form:
+            f = form["file"]
+            if hasattr(f, "filename"):
+                file = f
+
+    for k, v in request.query_params.items():
+        if k not in data:
+            data[k] = v
+
+    return data, files, file
+
+
+async def _save_input_for_job(job_id: str, data: dict, file: Optional[UploadFile]) -> Path:
+    existing = list(UPLOAD_DIR.glob(f"{job_id}_source.*"))
+    if existing and existing[0].stat().st_size > 0:
+        return existing[0]
+
+    ref_id = data.get("job_id")
+    if ref_id and _valid_job_id(ref_id):
+        ref_matches = list(UPLOAD_DIR.glob(f"{ref_id}_source.*"))
+        if ref_matches and ref_matches[0].stat().st_size > 0:
+            return ref_matches[0]
+
+    url = data.get("pdf_url")
+    if url:
+        try:
+            ext = os.path.splitext(url.split("?")[0])[1] or ".pdf"
+            path = UPLOAD_DIR / f"{job_id}_source{ext}"
+            await run_in_threadpool(_fetch_from_url, url, path)
+            return path
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Could not fetch file from URL: {e}")
+
+    if file and file.filename:
+        ext = os.path.splitext(file.filename)[1] or ".pdf"
+        path = UPLOAD_DIR / f"{job_id}_source{ext}"
+        try:
+            with open(path, "wb") as dst:
+                shutil.copyfileobj(file.file, dst, length=1024 * 1024)
+            return path
+        finally:
+            await file.close()
+
+    raise HTTPException(status_code=400, detail="Provide either a file upload, a 'pdf_url', or a valid 'job_id'.")
+
+
+async def _fetch_one_input(data: dict, file: Optional[UploadFile], prefix: str = "input") -> tuple[Path, str]:
+    job_tag = uuid.uuid4().hex[:8]
+    url = data.get("pdf_url")
+    if url:
+        try:
+            orig_name = os.path.basename(url.split("?")[0]) or "file.pdf"
+            ext = os.path.splitext(orig_name)[1] or ".pdf"
+            path = UPLOAD_DIR / f"{job_tag}_{prefix}{ext}"
+            await run_in_threadpool(_fetch_from_url, url, path)
+            return path, orig_name
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Could not fetch file from URL: {e}")
+
+    if file and file.filename:
+        orig_name = file.filename or "file.pdf"
+        ext = os.path.splitext(orig_name)[1] or ".pdf"
+        path = UPLOAD_DIR / f"{job_tag}_{prefix}{ext}"
+        try:
+            with open(path, "wb") as dst:
+                shutil.copyfileobj(file.file, dst, length=1024 * 1024)
+            return path, orig_name
+        finally:
+            await file.close()
+
+    raise HTTPException(status_code=400, detail="Provide either a 'pdf_url' or an uploaded file.")
+
+
+# ---------------------------------------------------- SECTIONS BOOKKEEPING ---
+
+def _sections_file(job_id: str) -> Path:
+    return OUTPUT_DIR / job_id / "sections.json"
+
+
+def _load_sections(job_id: str) -> list:
+    sf = _sections_file(job_id)
+    try:
+        with open(sf, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return []
+
+
+def _save_sections(job_id: str, sections: list):
+    job_dir = OUTPUT_DIR / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    with open(_sections_file(job_id), "w", encoding="utf-8") as f:
+        json.dump(sections, f, ensure_ascii=False)
+
+
+def _pages_label(pages: list[int]) -> str:
+    if not pages:
+        return ""
+    runs, start, prev = [], pages[0], pages[0]
+    for p in pages[1:]:
+        if p == prev + 1:
+            prev = p
+            continue
+        runs.append((start, prev))
+        start = prev = p
+    runs.append((start, prev))
+    return ", ".join(str(a) if a == b else f"{a}-{b}" for a, b in runs)
+
+
+def _sections_response(job_id: str) -> dict:
+    sections = _load_sections(job_id)
+    for sec in sections:
+        sec["download_url"] = f"/download/{job_id}/{quote(sec['filename'])}"
+    return {
+        "job_id": job_id,
+        "sections": sections,
+        "download_all_url": f"/download-all/{job_id}",
     }
-  });
-
-  function handleFile(file) {
-    if (!file.name.toLowerCase().endsWith('.pdf')) {
-      alert('Please choose a valid PDF file.');
-      return;
-    }
-    selectedFile = file;
-    fileName.textContent = file.name;
-    const mb = (file.size / (1024 * 1024)).toFixed(1);
-    fileSize.textContent = `${mb} MB`;
-    filePreview.classList.remove('hidden');
-    compressBtn.disabled = false;
-    resultCard.style.display = 'none';
-  }
-
-  modeSelect.addEventListener('change', () => {
-    qualityWrap.style.display = modeSelect.value === 'visually_lossless' ? 'block' : 'none';
-  });
-
-  qualitySlider.addEventListener('input', () => {
-    qualityVal.textContent = qualitySlider.value;
-  });
-
-  async function uploadChunked(file, onProgress) {
-    const CHUNK_SIZE = 10 * 1024 * 1024;
-    const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
-    const randomBytes = new Uint8Array(6);
-    crypto.getRandomValues(randomBytes);
-    const jobId = Array.from(randomBytes).map(b => b.toString(16).padStart(2, '0')).join('');
-    let lastResult = null;
-
-    for (let i = 0; i < totalChunks; i++) {
-      const start = i * CHUNK_SIZE;
-      const end = Math.min(start + CHUNK_SIZE, file.size);
-      const blob = file.slice(start, end);
-
-      const fd = new FormData();
-      fd.append('chunk', blob, 'chunk.bin');
-      fd.append('job_id', jobId);
-      fd.append('chunk_index', i);
-      fd.append('total_chunks', totalChunks);
-      fd.append('filename', file.name);
-      fd.append('mode', modeSelect.value);
-      fd.append('image_quality', qualitySlider.value);
-
-      const pct = Math.round(((i + 1) / totalChunks) * 100);
-      onProgress(pct);
-
-      const res = await fetch('/upload-chunk', { method: 'POST', body: fd });
-      if (!res.ok) throw new Error('Upload failed on chunk ' + (i + 1));
-      lastResult = await res.json().catch(() => null);
-    }
-    return { jobId, lastResult };
-  }
-
-  compressBtn.addEventListener('click', async () => {
-    if (!selectedFile) return;
-
-    compressBtn.disabled = true;
-    resultCard.style.display = 'none';
-    progressWrap.style.display = 'block';
-    progressBar.style.width = '0%';
-
-    try {
-      let jobId;
-      let chunkResult = null;
-      if (selectedFile.size > 10 * 1024 * 1024) {
-        progressStatus.textContent = `Streaming ${Math.round(selectedFile.size / (1024 * 1024))} MB in chunks…`;
-        const uploadInfo = await uploadChunked(selectedFile, (pct) => {
-          progressBar.style.width = pct + '%';
-          progressPercent.textContent = pct + '%';
-        });
-        jobId = uploadInfo.jobId;
-        chunkResult = uploadInfo.lastResult;
-      }
-
-      let data;
-      // If the assembled upload was already compressed automatically server-side:
-      if (chunkResult && chunkResult.compressed && chunkResult.download_url) {
-        data = chunkResult;
-      } else {
-        progressStatus.textContent = 'Optimizing PDF streams & fonts…';
-        progressPercent.textContent = 'Processing';
-
-        const fd = new FormData();
-        if (jobId) {
-          fd.append('job_id', jobId);
-        } else {
-          fd.append('file', selectedFile);
-        }
-        fd.append('mode', modeSelect.value);
-        fd.append('image_quality', qualitySlider.value);
-
-        const res = await fetch('/compress', { method: 'POST', body: fd });
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
-          throw new Error(err.detail || 'Compression failed.');
-        }
-
-        data = await res.json();
-      }
-
-      document.getElementById('resOrig').textContent = data.original_size_mb + ' MB';
-      document.getElementById('resComp').textContent = data.compressed_size_mb + ' MB';
-      document.getElementById('resSaved').textContent = data.saved_mb + ' MB';
-      document.getElementById('resPct').textContent = data.savings_percent + '% smaller';
-
-      const downloadBtn = document.getElementById('downloadBtn');
-      const viewBtn = document.getElementById('viewBtn');
-      downloadBtn.href = data.download_url;
-      downloadBtn.download = data.filename;
-      viewBtn.href = data.download_url;
-
-      resultCard.style.display = 'block';
-    } catch (err) {
-      alert('Error: ' + err.message);
-    } finally {
-      progressWrap.style.display = 'none';
-      compressBtn.disabled = false;
-    }
-  });
-</script>
-</body>
-</html>
-"""
 
 
-# ------------------------------------------------------------- MODELS ---
-
-class ChunkResponse(BaseModel):
-    status: str
-    job_id: str
-    chunk_index: int
-    total_chunks: int
-    complete: bool
-    compressed: Optional[bool] = None
-    original_size_mb: Optional[float] = None
-    compressed_size_mb: Optional[float] = None
-    saved_mb: Optional[float] = None
-    savings_percent: Optional[float] = None
-    filename: Optional[str] = None
-    download_url: Optional[str] = None
+def _crop_page(page, frac):
+    fx0, fy0, fx1, fy1 = frac
+    w, h = page.rect.width, page.rect.height
+    r = pymupdf.Rect(fx0 * w, fy0 * h, fx1 * w, fy1 * h) * page.derotation_matrix
+    base = page.cropbox
+    r = pymupdf.Rect(r.x0 + base.x0, r.y0 + base.y0, r.x1 + base.x0, r.y1 + base.y0)
+    page.set_cropbox(r)
 
 
-class CompressResponse(BaseModel):
-    status: str
-    job_id: str
-    filename: str
-    original_size_mb: float
-    compressed_size_mb: float
-    saved_mb: float
-    savings_percent: float
-    mode: str
-    duration_seconds: float
-    download_url: str
+# ================================================================ ROUTES ===
 
-
-def _sanitize_name(filename: str) -> str:
-    name = Path(filename).name
-    return re.sub(r"[^\w\-.]", "_", name)
-
-
-def _validate_job_id(job_id: str) -> bool:
-    return bool(job_id and re.fullmatch(r"[0-9a-zA-Z_\-]+", job_id))
-
-
-# ---------------------------------------------------------- ENDPOINTS ---
-
-@app.get("/", response_class=HTMLResponse)
-async def index_page():
-    """Serves the interactive web interface for PDF compression."""
-    return HTMLResponse(content=INDEX_HTML)
+@app.get("/")
+async def index(request: Request):
+    """Serves the unified frontend HTML with Split, Merge, Convert, and Compress tabs."""
+    return templates.TemplateResponse(
+        "index.html",
+        {"request": request, "js_version": uuid.uuid4().hex[:8]},
+    )
 
 
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "service": "fastapi-pdf-compressor"}
+    return {"status": "ok", "service": "pdf-toolkit-fastapi", "version": "2.0.0"}
 
 
-@app.post("/upload-chunk", response_model=ChunkResponse)
+# ---------------------------------------------------------- CHUNK UPLOAD ---
+
+@app.post("/upload-chunk")
 async def upload_chunk(
     chunk: UploadFile = File(...),
     job_id: str = Form(...),
     chunk_index: int = Form(...),
     total_chunks: int = Form(...),
-    filename: str = Form("document.pdf"),
-    compress_on_complete: bool = Form(True, description="Automatically compress PDF upon assembly"),
+    filename: str = Form("file.pdf"),
+    compress_on_complete: bool = Form(True),
     mode: Literal["lossless", "visually_lossless"] = Form("visually_lossless"),
-    image_quality: int = Form(90, ge=1, le=100),
+    image_quality: int = Form(90),
 ):
     """
-    Receives file slices (e.g. 10MB each) and appends directly to disk.
-    When the final chunk is received and assembled, automatically compresses the PDF
-    on the server side right after assembly before saving, without requiring any manual
-    compression step from the user.
+    Receives 10MB chunks directly to disk to bypass 413 limits.
+    When the final chunk is assembled, automatically compresses the PDF
+    on the server side right after assembly before saving, without requiring
+    any manual compression step from the user.
     """
-    if not _validate_job_id(job_id):
+    if not _valid_job_id(job_id):
         raise HTTPException(status_code=400, detail="Invalid job_id format.")
 
-    safe_name = _sanitize_name(filename)
-    if not safe_name.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only PDF files are supported.")
+    safe_name = Path(filename).name
+    ext = os.path.splitext(safe_name)[1] or ".pdf"
+    target_path = UPLOAD_DIR / f"{job_id}_source{ext}"
 
-    target_path = UPLOAD_DIR / f"{job_id}_source.pdf"
     write_mode = "wb" if chunk_index == 0 else "ab"
-
     try:
-        with open(target_path, write_mode) as dest:
-            shutil.copyfileobj(chunk.file, dest, length=1024 * 1024)
+        with open(target_path, write_mode) as dst:
+            shutil.copyfileobj(chunk.file, dst, length=1024 * 1024)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to write chunk {chunk_index}: {exc}")
+        raise HTTPException(status_code=500, detail=f"Failed to save chunk {chunk_index}: {exc}")
     finally:
         await chunk.close()
 
-    # Verify magic bytes on the initial chunk
-    if chunk_index == 0:
+    # Verify magic bytes on the first chunk of PDF files
+    if chunk_index == 0 and ext.lower() == ".pdf":
         with open(target_path, "rb") as f:
             header = f.read(5)
             if header != b"%PDF-":
                 try:
-                    os.remove(target_path)
+                    target_path.unlink(missing_ok=True)
                 except OSError:
                     pass
                 raise HTTPException(status_code=422, detail="Invalid PDF file (missing %PDF- header).")
 
     is_complete = (chunk_index + 1 >= total_chunks)
-
-    # Automatic compression pipeline right after assembly
     compressed = False
-    orig_mb = None
-    comp_mb = None
-    saved_mb = None
-    savings_pct = None
-    out_name = None
+    stats_data = {}
     download_url = None
+    out_name = None
 
-    if is_complete and compress_on_complete and target_path.is_file():
+    if is_complete and compress_on_complete and ext.lower() == ".pdf" and target_path.is_file():
         clean_name = safe_name if not safe_name.startswith("compressed_") else safe_name
         out_name = f"compressed_{clean_name}"
         job_output_dir = OUTPUT_DIR / job_id
@@ -518,7 +363,6 @@ async def upload_chunk(
         temp_comp_path = UPLOAD_DIR / f"{job_id}_compressed_tmp.pdf"
 
         try:
-            # Run compression in threadpool to keep the async event loop unblocked
             stats = await run_in_threadpool(
                 compress_pdf,
                 input_path=str(target_path),
@@ -528,22 +372,25 @@ async def upload_chunk(
             )
 
             if temp_comp_path.is_file() and temp_comp_path.stat().st_size > 0:
-                # Provide immediate download path in output directory
                 shutil.copyfile(temp_comp_path, final_output_path)
-                # Replace the uploaded source with the compressed version safely
                 try:
                     temp_comp_path.replace(target_path)
                 except Exception:
                     shutil.copyfile(temp_comp_path, target_path)
 
                 compressed = True
-                orig_mb = stats.get("original_size_mb")
-                comp_mb = stats.get("compressed_size_mb")
-                saved_mb = stats.get("saved_mb")
-                savings_pct = stats.get("savings_percent")
+                stats_data = stats
                 download_url = f"/download/{job_id}/{out_name}"
+
+                # Cache stats for instant retrieval by /compress
+                stats_cache_file = job_output_dir / "compress_stats.json"
+                stats["job_id"] = job_id
+                stats["filename"] = out_name
+                stats["download_url"] = download_url
+                with open(stats_cache_file, "w", encoding="utf-8") as sf:
+                    json.dump(stats, sf)
+
         except Exception as exc:
-            # Safe degradation: compression failure never breaks the upload
             logger.warning(f"Automatic compression failed for job {job_id}: {exc}")
         finally:
             if temp_comp_path.is_file():
@@ -552,130 +399,648 @@ async def upload_chunk(
                 except Exception:
                     pass
 
-    return ChunkResponse(
-        status="ok",
-        job_id=job_id,
-        chunk_index=chunk_index,
-        total_chunks=total_chunks,
-        complete=is_complete,
-        compressed=compressed,
-        original_size_mb=orig_mb,
-        compressed_size_mb=comp_mb,
-        saved_mb=saved_mb,
-        savings_percent=savings_pct,
-        filename=out_name,
-        download_url=download_url,
-    )
+    return {
+        "status": "ok",
+        "job_id": job_id,
+        "chunk_index": chunk_index,
+        "total_chunks": total_chunks,
+        "complete": is_complete,
+        "compressed": compressed,
+        "original_size_mb": stats_data.get("original_size_mb"),
+        "compressed_size_mb": stats_data.get("compressed_size_mb"),
+        "saved_mb": stats_data.get("saved_mb"),
+        "savings_percent": stats_data.get("savings_percent"),
+        "filename": out_name,
+        "download_url": download_url,
+    }
 
 
-@app.post("/compress", response_model=CompressResponse)
-async def compress_endpoint(
-    file: Optional[UploadFile] = File(None, description="Direct PDF file upload"),
-    job_id: Optional[str] = Form(None, description="Pre-uploaded chunk session ID (leave blank if uploading file)"),
-    mode: Literal["lossless", "visually_lossless"] = Form("visually_lossless"),
-    image_quality: int = Form(90, ge=1, le=100, description="Image quality for visually_lossless mode (1-100)"),
-):
+# ------------------------------------------------------------- PREVIEW ---
+
+@app.post("/preview")
+async def preview(request: Request):
     """
-    Compresses a PDF losslessly or visually-losslessly.
-    Supports either direct file uploads or pre-uploaded chunked jobs (via job_id).
+    Loads a PDF and returns {job_id, page_count}.
+    Pre-renders the first batch of 12 thumbnails for instant visual picker opening.
     """
-    # Clean up Swagger UI placeholder strings
-    if job_id:
-        clean_id = job_id.strip()
-        if clean_id.lower() in ("string", "null", "undefined", "none", ""):
-            job_id = None
-        else:
-            job_id = clean_id
-
-    # 1. Direct file upload takes precedence
-    if file and file.filename:
-        job_id = uuid.uuid4().hex[:12]
-        safe_name = _sanitize_name(file.filename)
-        if not safe_name.lower().endswith(".pdf"):
-            raise HTTPException(status_code=400, detail="Only PDF files are supported.")
-
-        source_path = UPLOAD_DIR / f"{job_id}_source.pdf"
-        try:
-            with open(source_path, "wb") as dest:
-                shutil.copyfileobj(file.file, dest, length=1024 * 1024)
-        finally:
-            await file.close()
-        orig_name = safe_name
-
-    # 2. Or pre-uploaded chunked job_id
-    elif job_id and _validate_job_id(job_id):
-        source_path = UPLOAD_DIR / f"{job_id}_source.pdf"
-        if not source_path.is_file():
-            raise HTTPException(
-                status_code=404,
-                detail=f"Uploaded PDF for job_id '{job_id}' not found. Please upload chunks via /upload-chunk first or attach a file directly."
-            )
-        existing_outputs = list((OUTPUT_DIR / job_id).glob("compressed_*.pdf")) if (OUTPUT_DIR / job_id).is_dir() else []
-        if existing_outputs:
-            orig_name = existing_outputs[0].name.replace("compressed_", "", 1)
-        else:
-            orig_name = "compressed_document.pdf"
+    data, files, file = await _parse_request_data(request)
+    job_id = data.get("job_id")
+    if not job_id or not _valid_job_id(job_id):
+        job_id, job_output_dir = _new_job()
     else:
-        raise HTTPException(
-            status_code=400,
-            detail="Please provide a PDF file in the 'file' field or a valid 'job_id' from /upload-chunk."
-        )
+        job_output_dir = OUTPUT_DIR / job_id
+        job_output_dir.mkdir(parents=True, exist_ok=True)
 
-    # 2. Prepare output path
-    job_output_dir = OUTPUT_DIR / job_id
-    job_output_dir.mkdir(parents=True, exist_ok=True)
-    out_filename = f"compressed_{orig_name}" if not orig_name.startswith("compressed_") else orig_name
-    output_path = job_output_dir / out_filename
+    source_path = await _save_input_for_job(job_id, data, file)
+    thumbs_dir = job_output_dir / "thumbs"
+    thumbs_dir.mkdir(parents=True, exist_ok=True)
 
-    # 3. Execute low-memory compression
     try:
-        stats = compress_pdf(
-            input_path=str(source_path),
-            output_path=str(output_path),
-            mode=mode,
-            image_quality=image_quality,
+        page_count = await run_in_threadpool(
+            generate_thumbnails,
+            str(source_path),
+            str(thumbs_dir),
+            width=340,
+            max_pages=12,
         )
     except Exception as exc:
-        raise HTTPException(status_code=422, detail=f"PDF compression failed: {exc}")
+        raise HTTPException(status_code=422, detail=f"Could not read that PDF: {exc}")
 
-    download_url = f"/download/{job_id}/{out_filename}"
+    return {"job_id": job_id, "page_count": page_count}
 
-    return CompressResponse(
-        status="success",
-        job_id=job_id,
-        filename=out_filename,
-        original_size_mb=stats["original_size_mb"],
-        compressed_size_mb=stats["compressed_size_mb"],
-        saved_mb=stats["saved_mb"],
-        savings_percent=stats["savings_percent"],
-        mode=mode,
-        duration_seconds=stats["duration_seconds"],
-        download_url=download_url,
+
+@app.get("/thumbnail/{job_id}/{page_num}")
+async def thumbnail(job_id: str, page_num: int):
+    if not _valid_job_id(job_id):
+        raise HTTPException(status_code=404, detail="Unknown job.")
+
+    thumbs_dir = OUTPUT_DIR / job_id / "thumbs"
+    thumbs_dir.mkdir(parents=True, exist_ok=True)
+    fname = f"thumb_{page_num:04d}.jpg"
+    thumb_path = thumbs_dir / fname
+
+    if not thumb_path.is_file():
+        source_path = _find_job_source(job_id)
+        try:
+            await run_in_threadpool(
+                generate_single_thumbnail,
+                str(source_path),
+                str(thumbs_dir),
+                page_num,
+                width=340,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=404, detail=f"Could not generate thumbnail for page {page_num}: {exc}")
+
+    if not thumb_path.is_file():
+        raise HTTPException(status_code=404, detail="Thumbnail not found.")
+
+    return FileResponse(str(thumb_path), media_type="image/jpeg")
+
+
+@app.post("/split-pages")
+async def split_pages(request: Request):
+    """
+    Extracts pages selected by the user in the thumbnail grid.
+    body: {"job_id": "...", "pages": [1,2,5,6], "combine": true|false}
+    """
+    data, _, _ = await _parse_request_data(request)
+    job_id = data.get("job_id")
+    pages = data.get("pages") or []
+    combine = bool(data.get("combine"))
+
+    if not job_id:
+        raise HTTPException(status_code=400, detail="Missing job_id — load the pages first.")
+
+    source_path = _find_job_source(job_id)
+    job_output_dir = OUTPUT_DIR / job_id
+    try:
+        pages_int = [int(p) for p in pages]
+        results = await run_in_threadpool(
+            extract_selected_pages,
+            str(source_path),
+            str(job_output_dir),
+            pages_int,
+            combine=combine,
+        )
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to split pages: {exc}")
+
+    for r in results:
+        r["download_url"] = f"/download/{job_id}/{quote(r['filename'])}"
+
+    return {
+        "job_id": job_id,
+        "chapter_count": len(results),
+        "chapters": results,
+        "download_all_url": f"/download-all/{job_id}",
+    }
+
+
+@app.get("/page-preview/{job_id}/{page}")
+async def page_preview(
+    job_id: str,
+    page: int,
+    x0: Optional[float] = None,
+    y0: Optional[float] = None,
+    x1: Optional[float] = None,
+    y1: Optional[float] = None,
+    wx0: Optional[float] = -1.0,
+    wx1: Optional[float] = -1.0,
+    mode: str = "band",
+):
+    """PNG preview of a page with highlighted line and word bounding boxes for Nepali spell check."""
+    if not _valid_job_id(job_id):
+        raise HTTPException(status_code=404, detail="Unknown job.")
+
+    source = _find_job_source(job_id)
+
+    def _render():
+        doc = pymupdf.open(str(source))
+        try:
+            if not 1 <= page <= doc.page_count:
+                return None
+            pg = doc[page - 1]
+            clip = None
+            if x0 is not None and y0 is not None and x1 is not None and y1 is not None:
+                line = pymupdf.Rect(x0 - 2, y0 - 1, x1 + 2, y1 + 1)
+                pg.draw_rect(line, color=None, fill=(1, 0.86, 0.1), fill_opacity=0.30)
+                if wx0 is not None and wx1 is not None and 0 <= wx0 < wx1 <= 1:
+                    word = pymupdf.Rect(line.x0 + wx0 * line.width, line.y0, line.x0 + wx1 * line.width, line.y1)
+                    pg.draw_rect(word, color=(0.85, 0.1, 0.1), width=1.3, fill=(1, 0.1, 0.1), fill_opacity=0.16)
+                if mode != "full":
+                    clip = pymupdf.Rect(0, max(0, y0 - 70), pg.rect.width, min(pg.rect.height, y1 + 70))
+            pix = pg.get_pixmap(dpi=130, clip=clip)
+            return pix.tobytes("png")
+        finally:
+            doc.close()
+
+    png_bytes = await run_in_threadpool(_render)
+    if png_bytes is None:
+        raise HTTPException(status_code=404, detail="Page not found.")
+
+    return Response(content=png_bytes, media_type="image/png", headers={"Cache-Control": "no-store"})
+
+
+@app.post("/dictionary/add")
+async def dictionary_add(request: Request):
+    data, _, _ = await _parse_request_data(request)
+    word = data.get("word", "")
+    if not add_custom_word(word):
+        raise HTTPException(status_code=422, detail="That is not a Nepali word.")
+    return {"ok": True}
+
+
+# ------------------------------------------------------ MANUAL SECTIONS ---
+
+@app.get("/sections/{job_id}")
+async def list_sections(job_id: str):
+    if not _valid_job_id(job_id):
+        raise HTTPException(status_code=404, detail="Unknown job.")
+    return _sections_response(job_id)
+
+
+@app.post("/create-section")
+async def create_section(request: Request):
+    data, _, _ = await _parse_request_data(request)
+    job_id = data.get("job_id")
+    if not _valid_job_id(job_id):
+        raise HTTPException(status_code=400, detail="Missing or invalid job — load the pages first.")
+
+    source_path = _find_job_source(job_id)
+
+    def _do_create():
+        src = pymupdf.open(str(source_path))
+        out = None
+        target_filepath = None
+        try:
+            total = src.page_count
+            pages = sorted({int(p) for p in (data.get("pages") or [])})
+            if not pages:
+                raise ValueError("Pick at least one page for this section.")
+            if pages[0] < 1 or pages[-1] > total:
+                raise ValueError(f"Pages must be between 1 and {total}.")
+
+            crops = {}
+            for key, rect in (data.get("crops") or {}).items():
+                p = int(key)
+                if p not in pages:
+                    continue
+                x0, y0, x1, y1 = (min(max(float(v), 0.0), 1.0) for v in rect)
+                if x1 - x0 < 0.03 or y1 - y0 < 0.03:
+                    raise ValueError(f"The crop on page {p} is too small.")
+                if not (x0 <= 0.005 and y0 <= 0.005 and x1 >= 0.995 and y1 >= 0.995):
+                    crops[p] = (x0, y0, x1, y1)
+
+            sections = _load_sections(job_id)
+            seq = max((sec["id"] for sec in sections), default=0) + 1
+            title = (data.get("name") or "").strip()[:120] or f"Section {seq}"
+            filename = f"{seq:02d}_{_safe_name(title, f'Section_{seq}')}.pdf"
+
+            out_dir = OUTPUT_DIR / job_id
+            out_dir.mkdir(parents=True, exist_ok=True)
+            target_filepath = out_dir / filename
+
+            out = pymupdf.open()
+            for p in pages:
+                out.insert_pdf(src, from_page=p - 1, to_page=p - 1)
+                if p in crops:
+                    _crop_page(out[len(out) - 1], crops[p])
+            out.save(str(target_filepath), garbage=2, deflate=True)
+
+            sections.append({
+                "id": seq,
+                "title": title,
+                "filename": filename,
+                "pages": _pages_label(pages),
+                "page_list": pages,
+                "cropped": sorted(crops),
+                "group": None,
+            })
+            _save_sections(job_id, sections)
+            return _sections_response(job_id)
+        finally:
+            if out:
+                out.close()
+            src.close()
+            gc.collect()
+
+    try:
+        return await run_in_threadpool(_do_create)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to create section: {exc}")
+
+
+@app.post("/delete-section")
+async def delete_section(request: Request):
+    data, _, _ = await _parse_request_data(request)
+    job_id = data.get("job_id")
+    if not _valid_job_id(job_id):
+        raise HTTPException(status_code=400, detail="Missing or invalid job.")
+
+    target_id = data.get("id")
+    sections = _load_sections(job_id)
+    keep = []
+    for sec in sections:
+        if sec["id"] == target_id:
+            try:
+                (OUTPUT_DIR / job_id / sec["filename"]).unlink(missing_ok=True)
+            except OSError:
+                pass
+        else:
+            keep.append(sec)
+    _save_sections(job_id, keep)
+    return _sections_response(job_id)
+
+
+# ---------------------------------------------------------------- SPLIT ---
+
+@app.post("/split")
+async def split(request: Request):
+    """
+    Splits PDF using specified mode:
+    unit | lesson | combined | unit_and_lesson | extract_text | combined_with_text |
+    nepali_text | nepali_pdf_text | nepali_spellcheck | range | fixed | per_page
+    """
+    data, _, file = await _parse_request_data(request)
+    job_id = data.get("job_id")
+    if job_id and _valid_job_id(job_id):
+        job_output_dir = OUTPUT_DIR / job_id
+        job_output_dir.mkdir(parents=True, exist_ok=True)
+        job_input_path = _find_job_source(job_id)
+    else:
+        job_id, job_output_dir = _new_job()
+        job_input_path, _ = await _fetch_one_input(data, file, "split")
+
+    mode = data.get("mode", "unit")
+    keyword = data.get("keyword", "Unit")
+    ranges_str = data.get("ranges", "")
+    try:
+        pages_per_chunk = int(data.get("pages_per_chunk", 5))
+    except (TypeError, ValueError):
+        pages_per_chunk = 5
+
+    notice = ""
+    spellcheck_findings = {}
+
+    if mode == "nepali_spellcheck":
+        shutil.copyfile(job_input_path, UPLOAD_DIR / f"{job_id}_source.pdf")
+
+    def _do_split():
+        nonlocal notice, spellcheck_findings
+        in_str = str(job_input_path)
+        out_str = str(job_output_dir)
+
+        if mode == "lesson":
+            return split_pdf_by_lesson(in_str, out_str)
+        elif mode == "combined":
+            return split_pdf_combined(in_str, out_str, keyword=keyword)
+        elif mode == "unit_and_lesson":
+            return split_pdf_unit_and_lesson(in_str, out_str, keyword=keyword)
+        elif mode == "extract_text":
+            return extract_text_hierarchy(in_str, out_str, keyword=keyword)
+        elif mode == "combined_with_text":
+            return split_pdf_combined_with_text(in_str, out_str, keyword=keyword)
+        elif mode in ("nepali_text", "nepali_pdf_text", "nepali_spellcheck"):
+            chaps, notc = extract_nepali_text_hierarchy(
+                in_str, out_str,
+                ranges_str=ranges_str, with_pdf=(mode == "nepali_pdf_text"),
+                check_spelling=(mode == "nepali_spellcheck"),
+                findings_out=spellcheck_findings,
+            )
+            notice = notc
+            return chaps
+        elif mode == "range":
+            return split_pdf_by_range(in_str, out_str, ranges_str)
+        elif mode == "fixed":
+            return split_pdf_fixed(in_str, out_str, pages_per_chunk)
+        elif mode == "per_page":
+            return split_pdf_per_page(in_str, out_str)
+        else:
+            return split_pdf_by_unit(in_str, out_str, keyword=keyword)
+
+    try:
+        chapters = await run_in_threadpool(_do_split)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Splitting failed: {exc}")
+    finally:
+        gc.collect()
+
+    for ch in chapters:
+        ch["download_url"] = f"/download/{job_id}/{quote(ch['filename'])}"
+
+    return {
+        "job_id": job_id,
+        "chapter_count": len(chapters),
+        "chapters": chapters,
+        "download_all_url": f"/download-all/{job_id}",
+        "notice": notice,
+        "spellcheck": spellcheck_findings.get("spellcheck"),
+    }
+
+
+# ---------------------------------------------------------------- MERGE ---
+
+@app.post("/merge")
+async def merge(request: Request):
+    """Merges multiple uploaded PDF files in user-specified order."""
+    data, files, _ = await _parse_request_data(request)
+    if not files:
+        raise HTTPException(status_code=400, detail="Upload two or more PDFs to merge.")
+
+    job_id, job_output_dir = _new_job()
+    saved_paths = []
+    for i, f in enumerate(files):
+        ext = os.path.splitext(f.filename or "")[1] or ".pdf"
+        p = UPLOAD_DIR / f"{job_id}_{i:03d}{ext}"
+        with open(p, "wb") as dst:
+            shutil.copyfileobj(f.file, dst, length=1024 * 1024)
+        saved_paths.append(str(p))
+
+    output_name = data.get("output_name", "Merged.pdf")
+
+    try:
+        results = await run_in_threadpool(
+            merge_pdfs,
+            saved_paths,
+            str(job_output_dir),
+            output_name=output_name,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Merge failed: {exc}")
+    finally:
+        gc.collect()
+
+    for r in results:
+        r["download_url"] = f"/download/{job_id}/{quote(r['filename'])}"
+
+    return {
+        "job_id": job_id,
+        "chapter_count": len(results),
+        "chapters": results,
+        "download_all_url": f"/download-all/{job_id}",
+    }
+
+
+# -------------------------------------------------------------- CONVERT ---
+
+@app.post("/convert")
+async def convert(request: Request):
+    """
+    Converts between formats:
+    - image_to_pdf (multiple images -> 1 PDF)
+    - pdf_to_image (PDF -> JPG / PNG)
+    - pdf_to_word (PDF -> DOCX)
+    - word_to_pdf (DOCX -> PDF)
+    """
+    data, files, file = await _parse_request_data(request)
+    job_id, job_output_dir = _new_job()
+    conv_type = data.get("type", "")
+
+    try:
+        if conv_type == "image_to_pdf":
+            if not files:
+                raise HTTPException(status_code=400, detail="Upload one or more images to combine.")
+            saved_paths = []
+            for i, f in enumerate(files):
+                ext = os.path.splitext(f.filename or "")[1] or ".jpg"
+                p = UPLOAD_DIR / f"{job_id}_{i:03d}{ext}"
+                with open(p, "wb") as dst:
+                    shutil.copyfileobj(f.file, dst, length=1024 * 1024)
+                saved_paths.append(str(p))
+            results = await run_in_threadpool(images_to_pdf, saved_paths, str(job_output_dir))
+
+        elif conv_type == "pdf_to_image":
+            job_input_path, _ = await _fetch_one_input(data, file, "convert")
+            fmt = data.get("format", "jpg")
+            results = await run_in_threadpool(pdf_to_images, str(job_input_path), str(job_output_dir), fmt=fmt)
+
+        elif conv_type == "pdf_to_word":
+            job_input_path, orig_name = await _fetch_one_input(data, file, "convert")
+            base_name = os.path.splitext(orig_name)[0]
+            results = await run_in_threadpool(pdf_to_word, str(job_input_path), str(job_output_dir), output_name=base_name)
+
+        elif conv_type == "word_to_pdf":
+            job_input_path, orig_name = await _fetch_one_input(data, file, "convert")
+            results = await run_in_threadpool(word_to_pdf, str(job_input_path), str(job_output_dir), output_name=orig_name)
+
+        else:
+            raise HTTPException(status_code=400, detail=f'Unknown conversion type "{conv_type}".')
+
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Conversion failed: {exc}")
+    finally:
+        gc.collect()
+
+    for r in results:
+        r["download_url"] = f"/download/{job_id}/{quote(r['filename'])}"
+
+    return {
+        "job_id": job_id,
+        "chapter_count": len(results),
+        "chapters": results,
+        "download_all_url": f"/download-all/{job_id}",
+    }
+
+
+# ------------------------------------------------------------- COMPRESS ---
+
+@app.post("/compress")
+async def compress_endpoint(request: Request):
+    """
+    Compresses an uploaded PDF, pre-uploaded chunked PDF (via job_id), or remote URL.
+    Keeps vector text and fonts razor-sharp while deflating bloated streams (<100MB guaranteed).
+    Returns both compressor stats and the chapter card format expected by the frontend.
+    """
+    data, _, file = await _parse_request_data(request)
+    job_id = data.get("job_id")
+    mode = data.get("mode") or "visually_lossless"
+    try:
+        quality = int(data.get("image_quality") or 90)
+    except (ValueError, TypeError):
+        quality = 90
+
+    # Clean Swagger UI placeholders
+    if job_id and str(job_id).strip().lower() in ("string", "null", "undefined", "none", ""):
+        job_id = None
+
+    # Check if this job_id was already compressed during chunked upload assembly
+    if job_id and _valid_job_id(job_id):
+        job_output_dir = OUTPUT_DIR / job_id
+        stats_file = job_output_dir / "compress_stats.json"
+        if stats_file.is_file():
+            try:
+                with open(stats_file, encoding="utf-8") as sf:
+                    cached = json.load(sf)
+                out_name = cached.get("filename") or "compressed_document.pdf"
+                if (job_output_dir / out_name).is_file():
+                    cached["chapters"] = [
+                        {
+                            "title": f"Compressed: {out_name.replace('compressed_', '', 1)}",
+                            "filename": out_name,
+                            "pages": f"{cached.get('original_size_mb')} MB → {cached.get('compressed_size_mb')} MB ({cached.get('savings_percent')}% saved)",
+                            "download_url": f"/download/{job_id}/{quote(out_name)}",
+                        }
+                    ]
+                    cached["chapter_count"] = 1
+                    cached["download_url"] = f"/download/{job_id}/{quote(out_name)}"
+                    cached["download_all_url"] = f"/download/{job_id}/{quote(out_name)}"
+                    return cached
+            except Exception:
+                pass
+
+        # If not cached, compress from existing source
+        input_path = _find_job_source(job_id)
+        orig_name = data.get("filename") or input_path.name
+    elif file and file.filename:
+        job_id, job_output_dir = _new_job()
+        input_path, orig_name = await _fetch_one_input(data, file, "compress")
+    elif data.get("pdf_url"):
+        job_id, job_output_dir = _new_job()
+        input_path, orig_name = await _fetch_one_input(data, file, "compress")
+    else:
+        raise HTTPException(status_code=400, detail="Provide either a file upload, a 'pdf_url', or a valid 'job_id'.")
+
+    job_output_dir = OUTPUT_DIR / job_id
+    job_output_dir.mkdir(parents=True, exist_ok=True)
+
+    clean_name = re.sub(r"^[0-9a-fA-F]{8,12}_(source|compress)\.?", "", orig_name).strip() or "document.pdf"
+    if not clean_name.lower().endswith(".pdf"):
+        clean_name += ".pdf"
+    out_name = clean_name if clean_name.startswith("compressed_") else f"compressed_{clean_name}"
+    output_path = job_output_dir / out_name
+
+    try:
+        stats = await run_in_threadpool(
+            compress_pdf,
+            input_path=str(input_path),
+            output_path=str(output_path),
+            mode=mode,
+            image_quality=quality,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Compression failed: {exc}")
+
+    orig_mb = stats["original_size_mb"]
+    comp_mb = stats["compressed_size_mb"]
+    saved_mb = stats["saved_mb"]
+    saved_pct = stats["savings_percent"]
+    duration = stats["duration_seconds"]
+
+    stats["job_id"] = job_id
+    stats["filename"] = out_name
+    stats["download_url"] = f"/download/{job_id}/{quote(out_name)}"
+    stats["download_all_url"] = f"/download/{job_id}/{quote(out_name)}"
+    stats["chapter_count"] = 1
+    stats["chapters"] = [
+        {
+            "title": f"Compressed: {clean_name}",
+            "filename": out_name,
+            "pages": f"{orig_mb} MB → {comp_mb} MB ({saved_pct}% saved)",
+            "download_url": f"/download/{job_id}/{quote(out_name)}",
+        }
+    ]
+    stats["notice"] = (
+        f"Compressed {orig_mb} MB down to {comp_mb} MB "
+        f"— saved {saved_mb} MB ({saved_pct}%) in {duration}s"
     )
 
+    # Cache stats for fast retrieval
+    try:
+        with open(job_output_dir / "compress_stats.json", "w", encoding="utf-8") as sf:
+            json.dump(stats, sf)
+    except Exception:
+        pass
+
+    return stats
+
+
+# ------------------------------------------------------------- DOWNLOAD ---
 
 @app.get("/download/{job_id}/{filename}")
-async def download_file(job_id: str, filename: str):
-    """
-    Streams the compressed PDF back to the client using FileResponse.
-    Supports HTTP Range requests and uses zero RAM.
-    """
-    if not _validate_job_id(job_id):
+async def download_one(job_id: str, filename: str):
+    """Streams an individual output file to the user as attachment."""
+    if not _valid_job_id(job_id):
         raise HTTPException(status_code=400, detail="Invalid job_id.")
 
-    safe_name = _sanitize_name(filename)
+    safe_name = Path(filename).name
     target_path = OUTPUT_DIR / job_id / safe_name
-
     if not target_path.is_file():
         raise HTTPException(status_code=404, detail="Requested file was not found.")
 
     return FileResponse(
         path=str(target_path),
-        media_type="application/pdf",
         filename=safe_name,
+        media_type="application/octet-stream",
+    )
+
+
+@app.get("/download-all/{job_id}")
+async def download_all(job_id: str):
+    """Zips all deliverables for a job and streams back as a .zip archive."""
+    if not _valid_job_id(job_id):
+        raise HTTPException(status_code=400, detail="Invalid job_id.")
+
+    directory = OUTPUT_DIR / job_id
+    if not directory.is_dir():
+        raise HTTPException(status_code=404, detail="Job directory not found.")
+
+    zip_path = OUTPUT_DIR / f"{job_id}.zip"
+
+    def _create_zip():
+        with zipfile.ZipFile(str(zip_path), "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for root, dirs, files in os.walk(str(directory)):
+                dirs[:] = [d for d in dirs if d != "thumbs"]
+                for fname in sorted(files):
+                    if fname in ("sections.json", "compress_stats.json"):
+                        continue
+                    full_p = os.path.join(root, fname)
+                    arcname = os.path.relpath(full_p, str(directory))
+                    zf.write(full_p, arcname=arcname)
+
+    await run_in_threadpool(_create_zip)
+
+    if not zip_path.is_file():
+        raise HTTPException(status_code=500, detail="Failed to build zip archive.")
+
+    return FileResponse(
+        path=str(zip_path),
+        filename=f"{job_id}.zip",
+        media_type="application/zip",
     )
 
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("fastapi_app:app", host="0.0.0.0", port=8000, reload=True)
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("fastapi_app:app", host="0.0.0.0", port=port, reload=True)
