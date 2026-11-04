@@ -302,6 +302,7 @@ INDEX_HTML = """<!DOCTYPE html>
     const randomBytes = new Uint8Array(6);
     crypto.getRandomValues(randomBytes);
     const jobId = Array.from(randomBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+    let lastResult = null;
 
     for (let i = 0; i < totalChunks; i++) {
       const start = i * CHUNK_SIZE;
@@ -314,14 +315,17 @@ INDEX_HTML = """<!DOCTYPE html>
       fd.append('chunk_index', i);
       fd.append('total_chunks', totalChunks);
       fd.append('filename', file.name);
+      fd.append('mode', modeSelect.value);
+      fd.append('image_quality', qualitySlider.value);
 
       const pct = Math.round(((i + 1) / totalChunks) * 100);
       onProgress(pct);
 
       const res = await fetch('/upload-chunk', { method: 'POST', body: fd });
       if (!res.ok) throw new Error('Upload failed on chunk ' + (i + 1));
+      lastResult = await res.json().catch(() => null);
     }
-    return jobId;
+    return { jobId, lastResult };
   }
 
   compressBtn.addEventListener('click', async () => {
@@ -334,33 +338,42 @@ INDEX_HTML = """<!DOCTYPE html>
 
     try {
       let jobId;
+      let chunkResult = null;
       if (selectedFile.size > 10 * 1024 * 1024) {
         progressStatus.textContent = `Streaming ${Math.round(selectedFile.size / (1024 * 1024))} MB in chunks…`;
-        jobId = await uploadChunked(selectedFile, (pct) => {
+        const uploadInfo = await uploadChunked(selectedFile, (pct) => {
           progressBar.style.width = pct + '%';
           progressPercent.textContent = pct + '%';
         });
+        jobId = uploadInfo.jobId;
+        chunkResult = uploadInfo.lastResult;
       }
 
-      progressStatus.textContent = 'Optimizing PDF streams & fonts…';
-      progressPercent.textContent = 'Processing';
-
-      const fd = new FormData();
-      if (jobId) {
-        fd.append('job_id', jobId);
+      let data;
+      // If the assembled upload was already compressed automatically server-side:
+      if (chunkResult && chunkResult.compressed && chunkResult.download_url) {
+        data = chunkResult;
       } else {
-        fd.append('file', selectedFile);
-      }
-      fd.append('mode', modeSelect.value);
-      fd.append('image_quality', qualitySlider.value);
+        progressStatus.textContent = 'Optimizing PDF streams & fonts…';
+        progressPercent.textContent = 'Processing';
 
-      const res = await fetch('/compress', { method: 'POST', body: fd });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || 'Compression failed.');
-      }
+        const fd = new FormData();
+        if (jobId) {
+          fd.append('job_id', jobId);
+        } else {
+          fd.append('file', selectedFile);
+        }
+        fd.append('mode', modeSelect.value);
+        fd.append('image_quality', qualitySlider.value);
 
-      const data = await res.json();
+        const res = await fetch('/compress', { method: 'POST', body: fd });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.detail || 'Compression failed.');
+        }
+
+        data = await res.json();
+      }
 
       document.getElementById('resOrig').textContent = data.original_size_mb + ' MB';
       document.getElementById('resComp').textContent = data.compressed_size_mb + ' MB';
@@ -517,8 +530,11 @@ async def upload_chunk(
             if temp_comp_path.is_file() and temp_comp_path.stat().st_size > 0:
                 # Provide immediate download path in output directory
                 shutil.copyfile(temp_comp_path, final_output_path)
-                # Replace the uploaded source with the compressed version
-                temp_comp_path.replace(target_path)
+                # Replace the uploaded source with the compressed version safely
+                try:
+                    temp_comp_path.replace(target_path)
+                except Exception:
+                    shutil.copyfile(temp_comp_path, target_path)
 
                 compressed = True
                 orig_mb = stats.get("original_size_mb")
