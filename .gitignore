@@ -1,0 +1,37 @@
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Temporary / Scratch files & folders
+scratch/
+test_*.pdf
+test_*.png
+*.tmp
+*.log
+
+# User Uploads and Generated Outputs (preserve directory structure via .gitkeep)
+uploads/*
+!uploads/.gitkeep
+output/*
+!output/.gitkeep
+
+# Generated PDFs and images
+*.pdf
+*.png
+*.jpg
+*.jpeg
+
+# Environments and IDE
+.env
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+

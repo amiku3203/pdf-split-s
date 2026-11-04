@@ -18,9 +18,14 @@ Logic:
    saved separately as "00_Front_Matter.pdf".
 """
 
+import gc
 import os
 import re
 from pypdf import PdfReader, PdfWriter
+try:
+    import pymupdf
+except ImportError:
+    pymupdf = None
 
 
 def _clean_filename(text: str, fallback: str) -> str:
@@ -700,24 +705,54 @@ def split_pdf_by_range(input_path: str, output_dir: str, ranges_str: str):
     Returns a list of dicts: [{"title": ..., "filename": ..., "pages": "1-5"}, ...]
     """
     os.makedirs(output_dir, exist_ok=True)
-    reader = PdfReader(input_path)
-    total_pages = len(reader.pages)
+    if pymupdf is not None:
+        doc = pymupdf.open(input_path)
+        try:
+            total_pages = doc.page_count
+            ranges = _parse_page_ranges(ranges_str, total_pages)
+            results = []
+            for idx, (start, end) in enumerate(ranges):
+                out = pymupdf.open()
+                try:
+                    out.insert_pdf(doc, from_page=start, to_page=end - 1)
+                    fname = f"Pages_{start + 1}-{end}.pdf"
+                    out.save(os.path.join(output_dir, fname), garbage=2, deflate=True)
+                    results.append({
+                        "title": f"Pages {start + 1}\u2013{end}",
+                        "filename": fname,
+                        "pages": f"{start + 1}-{end}",
+                    })
+                finally:
+                    out.close()
+                    del out
+            return results
+        finally:
+            doc.close()
+            del doc
+            gc.collect()
 
-    ranges = _parse_page_ranges(ranges_str, total_pages)
-    results = []
-    for idx, (start, end) in enumerate(ranges):
-        writer = PdfWriter()
-        for p in range(start, end):
-            writer.add_page(reader.pages[p])
-        fname = f"Pages_{start + 1}-{end}.pdf"
-        with open(os.path.join(output_dir, fname), "wb") as f:
-            writer.write(f)
-        results.append({
-            "title": f"Pages {start + 1}\u2013{end}",
-            "filename": fname,
-            "pages": f"{start + 1}-{end}",
-        })
-    return results
+    reader = PdfReader(input_path)
+    try:
+        total_pages = len(reader.pages)
+        ranges = _parse_page_ranges(ranges_str, total_pages)
+        results = []
+        for idx, (start, end) in enumerate(ranges):
+            writer = PdfWriter()
+            for p in range(start, end):
+                writer.add_page(reader.pages[p])
+            fname = f"Pages_{start + 1}-{end}.pdf"
+            with open(os.path.join(output_dir, fname), "wb") as f:
+                writer.write(f)
+            del writer
+            results.append({
+                "title": f"Pages {start + 1}\u2013{end}",
+                "filename": fname,
+                "pages": f"{start + 1}-{end}",
+            })
+        return results
+    finally:
+        del reader
+        gc.collect()
 
 
 def split_pdf_fixed(input_path: str, output_dir: str, pages_per_chunk: int):
@@ -730,29 +765,61 @@ def split_pdf_fixed(input_path: str, output_dir: str, pages_per_chunk: int):
     Returns a list of dicts: [{"title": ..., "filename": ..., "pages": "1-5"}, ...]
     """
     os.makedirs(output_dir, exist_ok=True)
-    reader = PdfReader(input_path)
-    total_pages = len(reader.pages)
-
     if pages_per_chunk < 1:
         raise ValueError("Pages per file must be at least 1.")
 
-    results = []
-    part = 1
-    for start in range(0, total_pages, pages_per_chunk):
-        end = min(start + pages_per_chunk, total_pages)
-        writer = PdfWriter()
-        for p in range(start, end):
-            writer.add_page(reader.pages[p])
-        fname = f"Part_{part:02d}_Pages_{start + 1}-{end}.pdf"
-        with open(os.path.join(output_dir, fname), "wb") as f:
-            writer.write(f)
-        results.append({
-            "title": f"Part {part} (pages {start + 1}\u2013{end})",
-            "filename": fname,
-            "pages": f"{start + 1}-{end}",
-        })
-        part += 1
-    return results
+    if pymupdf is not None:
+        doc = pymupdf.open(input_path)
+        try:
+            total_pages = doc.page_count
+            results = []
+            part = 1
+            for start in range(0, total_pages, pages_per_chunk):
+                end = min(start + pages_per_chunk, total_pages)
+                out = pymupdf.open()
+                try:
+                    out.insert_pdf(doc, from_page=start, to_page=end - 1)
+                    fname = f"Part_{part:02d}_Pages_{start + 1}-{end}.pdf"
+                    out.save(os.path.join(output_dir, fname), garbage=2, deflate=True)
+                    results.append({
+                        "title": f"Part {part} (pages {start + 1}\u2013{end})",
+                        "filename": fname,
+                        "pages": f"{start + 1}-{end}",
+                    })
+                finally:
+                    out.close()
+                    del out
+                part += 1
+            return results
+        finally:
+            doc.close()
+            del doc
+            gc.collect()
+
+    reader = PdfReader(input_path)
+    try:
+        total_pages = len(reader.pages)
+        results = []
+        part = 1
+        for start in range(0, total_pages, pages_per_chunk):
+            end = min(start + pages_per_chunk, total_pages)
+            writer = PdfWriter()
+            for p in range(start, end):
+                writer.add_page(reader.pages[p])
+            fname = f"Part_{part:02d}_Pages_{start + 1}-{end}.pdf"
+            with open(os.path.join(output_dir, fname), "wb") as f:
+                writer.write(f)
+            del writer
+            results.append({
+                "title": f"Part {part} (pages {start + 1}\u2013{end})",
+                "filename": fname,
+                "pages": f"{start + 1}-{end}",
+            })
+            part += 1
+        return results
+    finally:
+        del reader
+        gc.collect()
 
 
 def split_pdf_per_page(input_path: str, output_dir: str):
@@ -762,22 +829,55 @@ def split_pdf_per_page(input_path: str, output_dir: str):
     Returns a list of dicts: [{"title": ..., "filename": ..., "pages": "1-1"}, ...]
     """
     os.makedirs(output_dir, exist_ok=True)
-    reader = PdfReader(input_path)
-    total_pages = len(reader.pages)
+    if pymupdf is not None:
+        doc = pymupdf.open(input_path)
+        try:
+            total_pages = doc.page_count
+            results = []
+            for i in range(total_pages):
+                out = pymupdf.open()
+                try:
+                    out.insert_pdf(doc, from_page=i, to_page=i)
+                    fname = f"Page_{i + 1:03d}.pdf"
+                    out.save(os.path.join(output_dir, fname), garbage=2, deflate=True)
+                    results.append({
+                        "title": f"Page {i + 1}",
+                        "filename": fname,
+                        "pages": f"{i + 1}-{i + 1}",
+                    })
+                finally:
+                    out.close()
+                    del out
+                if (i + 1) % 50 == 0:
+                    gc.collect()
+            return results
+        finally:
+            doc.close()
+            del doc
+            gc.collect()
 
-    results = []
-    for i in range(total_pages):
-        writer = PdfWriter()
-        writer.add_page(reader.pages[i])
-        fname = f"Page_{i + 1:03d}.pdf"
-        with open(os.path.join(output_dir, fname), "wb") as f:
-            writer.write(f)
-        results.append({
-            "title": f"Page {i + 1}",
-            "filename": fname,
-            "pages": f"{i + 1}-{i + 1}",
-        })
-    return results
+    reader = PdfReader(input_path)
+    try:
+        total_pages = len(reader.pages)
+        results = []
+        for i in range(total_pages):
+            writer = PdfWriter()
+            writer.add_page(reader.pages[i])
+            fname = f"Page_{i + 1:03d}.pdf"
+            with open(os.path.join(output_dir, fname), "wb") as f:
+                writer.write(f)
+            del writer
+            results.append({
+                "title": f"Page {i + 1}",
+                "filename": fname,
+                "pages": f"{i + 1}-{i + 1}",
+            })
+            if (i + 1) % 50 == 0:
+                gc.collect()
+        return results
+    finally:
+        del reader
+        gc.collect()
 
 
 def extract_selected_pages(input_path: str, output_dir: str, pages, combine: bool = False):
@@ -792,42 +892,92 @@ def extract_selected_pages(input_path: str, output_dir: str, pages, combine: boo
     Returns a list of dicts like the other split_* functions.
     """
     os.makedirs(output_dir, exist_ok=True)
-    reader = PdfReader(input_path)
-    total_pages = len(reader.pages)
-
     if not pages:
         raise ValueError("No pages were selected.")
 
-    for p in pages:
-        if p < 1 or p > total_pages:
-            raise ValueError(f"Page {p} is out of range for a {total_pages}-page PDF.")
+    if pymupdf is not None:
+        doc = pymupdf.open(input_path)
+        try:
+            total_pages = doc.page_count
+            for p in pages:
+                if p < 1 or p > total_pages:
+                    raise ValueError(f"Page {p} is out of range for a {total_pages}-page PDF.")
 
-    if combine:
-        writer = PdfWriter()
+            if combine:
+                out = pymupdf.open()
+                try:
+                    for p in pages:
+                        out.insert_pdf(doc, from_page=p - 1, to_page=p - 1)
+                    fname = "Selected_Pages.pdf"
+                    out.save(os.path.join(output_dir, fname), garbage=2, deflate=True)
+                    return [{
+                        "title": f"Selected pages ({len(pages)} page{'s' if len(pages) != 1 else ''})",
+                        "filename": fname,
+                        "pages": ",".join(str(p) for p in pages),
+                    }]
+                finally:
+                    out.close()
+                    del out
+
+            results = []
+            for p in pages:
+                out = pymupdf.open()
+                try:
+                    out.insert_pdf(doc, from_page=p - 1, to_page=p - 1)
+                    fname = f"Page_{p:03d}.pdf"
+                    out.save(os.path.join(output_dir, fname), garbage=2, deflate=True)
+                    results.append({
+                        "title": f"Page {p}",
+                        "filename": fname,
+                        "pages": f"{p}-{p}",
+                    })
+                finally:
+                    out.close()
+                    del out
+            return results
+        finally:
+            doc.close()
+            del doc
+            gc.collect()
+
+    reader = PdfReader(input_path)
+    try:
+        total_pages = len(reader.pages)
         for p in pages:
-            writer.add_page(reader.pages[p - 1])
-        fname = "Selected_Pages.pdf"
-        with open(os.path.join(output_dir, fname), "wb") as f:
-            writer.write(f)
-        return [{
-            "title": f"Selected pages ({len(pages)} page{'s' if len(pages) != 1 else ''})",
-            "filename": fname,
-            "pages": ",".join(str(p) for p in pages),
-        }]
+            if p < 1 or p > total_pages:
+                raise ValueError(f"Page {p} is out of range for a {total_pages}-page PDF.")
 
-    results = []
-    for p in pages:
-        writer = PdfWriter()
-        writer.add_page(reader.pages[p - 1])
-        fname = f"Page_{p:03d}.pdf"
-        with open(os.path.join(output_dir, fname), "wb") as f:
-            writer.write(f)
-        results.append({
-            "title": f"Page {p}",
-            "filename": fname,
-            "pages": f"{p}-{p}",
-        })
-    return results
+        if combine:
+            writer = PdfWriter()
+            for p in pages:
+                writer.add_page(reader.pages[p - 1])
+            fname = "Selected_Pages.pdf"
+            with open(os.path.join(output_dir, fname), "wb") as f:
+                writer.write(f)
+            del writer
+            return [{
+                "title": f"Selected pages ({len(pages)} page{'s' if len(pages) != 1 else ''})",
+                "filename": fname,
+                "pages": ",".join(str(p) for p in pages),
+            }]
+
+        results = []
+        for p in pages:
+            writer = PdfWriter()
+            writer.add_page(reader.pages[p - 1])
+            fname = f"Page_{p:03d}.pdf"
+            with open(os.path.join(output_dir, fname), "wb") as f:
+                writer.write(f)
+            del writer
+            results.append({
+                "title": f"Page {p}",
+                "filename": fname,
+                "pages": f"{p}-{p}",
+            })
+        return results
+    finally:
+        del reader
+        gc.collect()
 
 
 def merge_pdfs(input_paths, output_dir: str, output_name: str = "Merged.pdf"):
@@ -842,24 +992,55 @@ def merge_pdfs(input_paths, output_dir: str, output_name: str = "Merged.pdf"):
     if len(input_paths) < 2:
         raise ValueError("Add at least 2 PDFs to merge.")
 
+    if pymupdf is not None:
+        out = pymupdf.open()
+        total_pages = 0
+        try:
+            for path in input_paths:
+                src = pymupdf.open(path)
+                try:
+                    out.insert_pdf(src)
+                    total_pages += src.page_count
+                finally:
+                    src.close()
+                    del src
+
+            fname = output_name if output_name.lower().endswith(".pdf") else f"{output_name}.pdf"
+            out_path = os.path.join(output_dir, fname)
+            out.save(out_path, garbage=2, deflate=True)
+            return [{
+                "title": f"Merged PDF ({len(input_paths)} files, {total_pages} pages)",
+                "filename": fname,
+                "pages": f"1-{total_pages}",
+            }]
+        finally:
+            out.close()
+            del out
+            gc.collect()
+
     writer = PdfWriter()
     total_pages = 0
-    for path in input_paths:
-        reader = PdfReader(path)
-        for page in reader.pages:
-            writer.add_page(page)
-        total_pages += len(reader.pages)
+    try:
+        for path in input_paths:
+            reader = PdfReader(path)
+            for page in reader.pages:
+                writer.add_page(page)
+            total_pages += len(reader.pages)
+            del reader
 
-    fname = output_name if output_name.lower().endswith(".pdf") else f"{output_name}.pdf"
-    out_path = os.path.join(output_dir, fname)
-    with open(out_path, "wb") as f:
-        writer.write(f)
+        fname = output_name if output_name.lower().endswith(".pdf") else f"{output_name}.pdf"
+        out_path = os.path.join(output_dir, fname)
+        with open(out_path, "wb") as f:
+            writer.write(f)
 
-    return [{
-        "title": f"Merged PDF ({len(input_paths)} files, {total_pages} pages)",
-        "filename": fname,
-        "pages": f"1-{total_pages}",
-    }]
+        return [{
+            "title": f"Merged PDF ({len(input_paths)} files, {total_pages} pages)",
+            "filename": fname,
+            "pages": f"1-{total_pages}",
+        }]
+    finally:
+        del writer
+        gc.collect()
 
 
 if __name__ == "__main__":

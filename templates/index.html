@@ -17,6 +17,7 @@
       <button type="button" class="tool-tab active" data-tool="split">Split</button>
       <button type="button" class="tool-tab" data-tool="merge">Merge</button>
       <button type="button" class="tool-tab" data-tool="convert">Convert</button>
+      <button type="button" class="tool-tab" data-tool="compress">Compress</button>
     </div>
   </div>
 
@@ -25,7 +26,7 @@
     <!-- ============ SPLIT PANEL ============ -->
     <form class="slot tool-panel" id="splitForm" data-panel="split">
       <div class="slot-row">
-        <label class="field" for="pdfUrl">
+        <label class="field" for="pdfUrl" id="urlFieldLabel">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
             <path d="M13.5 6.5L18 11a4 4 0 0 1 0 5.5l-1 1a4 4 0 0 1-5.5 0L7 13" />
             <path d="M10.5 17.5L6 13a4 4 0 0 1 0-5.5l1-1a4 4 0 0 1 5.5 0L17 11" />
@@ -34,10 +35,21 @@
             type="url"
             id="pdfUrl"
             name="pdfUrl"
-            placeholder="https://your-storage.com/textbook.pdf"
+            placeholder="Paste PDF link (or click 'Upload PDF' below)"
             autocomplete="off"
           />
         </label>
+
+        <div class="field-selected-file hidden" id="selectedFilePill">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+            <polyline points="14 2 14 8 20 8" />
+          </svg>
+          <span class="file-name" id="selectedFileName">file.pdf</span>
+          <span class="file-size-tag" id="selectedFileSize">0 MB</span>
+          <button type="button" class="file-remove-btn" id="removeFileBtn" title="Remove file">&times;</button>
+        </div>
+
         <button type="submit" class="btn btn-primary" id="splitBtn">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M8 4l8 8-8 8" />
@@ -57,11 +69,17 @@
             <option value="extract_text">Extract Text (folders, .txt only)</option>
             <option value="combined_with_text">Unit + Lesson + Text (folders, both)</option>
           </optgroup>
+          <optgroup label="Nepali books (Preeti / Kantipur fonts, Unicode, scanned)">
+            <option value="nepali_text">Nepali Text — एकाइ / पाठ (folders, .txt)</option>
+            <option value="nepali_pdf_text">Nepali PDF + Text (folders, both)</option>
+            <option value="nepali_spellcheck">Nepali Spell Check (results shown here)</option>
+          </optgroup>
           <optgroup label="By page count (works on any PDF, even scanned)">
             <option value="range">Page range (e.g. 1-5, 6-10)</option>
             <option value="fixed">Fixed pages per file</option>
             <option value="per_page">Every single page</option>
             <option value="pages">Select pages visually…</option>
+            <option value="sections">Manual sections — pick pages, name each lesson…</option>
           </optgroup>
         </select>
 
@@ -83,8 +101,16 @@
         </span>
       </div>
 
-      <div class="slot-options">
-        <button type="button" class="upload-alt" id="uploadAltBtn">or upload a file instead</button>
+      <div class="slot-options" style="margin-top: 10px; display: flex; align-items: center; gap: 12px;">
+        <button type="button" class="btn-choose-file" id="uploadAltBtn">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <polyline points="17 8 12 3 7 8" />
+            <line x1="12" y1="3" x2="12" y2="15" />
+          </svg>
+          Choose PDF File from Computer
+        </button>
+        <span class="drag-hint">or drag & drop PDF here</span>
         <input type="file" id="fileInput" accept="application/pdf" style="display:none" />
       </div>
     </form>
@@ -177,6 +203,72 @@
       </div>
     </form>
 
+    <!-- ============ COMPRESS PANEL ============ -->
+    <form class="slot tool-panel hidden" id="compressForm" data-panel="compress">
+      <div class="slot-row">
+        <label class="field" for="compressUrl" id="compressUrlLabel">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <path d="M13.5 6.5L18 11a4 4 0 0 1 0 5.5l-1 1a4 4 0 0 1-5.5 0L7 13" />
+            <path d="M10.5 17.5L6 13a4 4 0 0 1 0-5.5l1-1a4 4 0 0 1 5.5 0L17 11" />
+          </svg>
+          <input
+            type="url"
+            id="compressUrl"
+            name="compressUrl"
+            placeholder="Paste PDF link (or click 'Choose PDF File' below)"
+            autocomplete="off"
+          />
+        </label>
+
+        <div class="field-selected-file hidden" id="compressSelectedFilePill">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+            <polyline points="14 2 14 8 20 8" />
+          </svg>
+          <span class="file-name" id="compressSelectedFileName">file.pdf</span>
+          <span class="file-size-tag" id="compressSelectedFileSize">0 MB</span>
+          <button type="button" class="file-remove-btn" id="compressRemoveFileBtn" title="Remove file">&times;</button>
+        </div>
+
+        <button type="submit" class="btn btn-primary" id="compressBtn">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M8 4l8 8-8 8" />
+          </svg>
+          Compress
+        </button>
+      </div>
+
+      <div class="slot-options">
+        <span>Mode</span>
+        <div class="kw-toggle" id="compressModeToggle">
+          <button type="button" data-cmode="visually_lossless" class="active" title="High-efficiency compression preserving full text and visual sharpness">Visually Lossless</button>
+          <button type="button" data-cmode="lossless" title="100% exact pixel/byte untouched, stream and font deflation">Lossless</button>
+        </div>
+
+        <span class="kw-toggle-sub" id="compressQualityWrap">
+          <span>quality</span>
+          <div class="kw-toggle" id="compressQualityToggle">
+            <button type="button" data-quality="85">85%</button>
+            <button type="button" data-quality="90" class="active">90%</button>
+            <button type="button" data-quality="95">95%</button>
+          </div>
+        </span>
+      </div>
+
+      <div class="slot-options" style="margin-top: 10px; display: flex; align-items: center; gap: 12px;">
+        <button type="button" class="btn-choose-file" id="compressUploadAltBtn">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <polyline points="17 8 12 3 7 8" />
+            <line x1="12" y1="3" x2="12" y2="15" />
+          </svg>
+          Choose PDF File from Computer
+        </button>
+        <span class="drag-hint">or drag & drop PDF here</span>
+        <input type="file" id="compressFileInput" accept="application/pdf" style="display:none" />
+      </div>
+    </form>
+
     <div class="status" id="status">
       <span class="spinner" id="statusSpinner"></span>
       <span id="statusText">Working on it…</span>
@@ -203,6 +295,39 @@
         Download all (.zip)
       </a>
     </div>
+    <p class="results-notice" id="resultsNotice"></p>
+    <button type="button" class="upload-alt hidden" id="reopenSectionsBtn">+ Add more sections</button>
+
+    <!-- Nepali spell-check results, shown right here instead of as a file -->
+    <div class="spell-panel" id="spellPanel" style="display:none">
+      <div class="spell-summary" id="spellSummary"></div>
+      <div class="spell-tabs" role="tablist">
+        <button type="button" class="spell-tab active" id="spellTabLikely"></button>
+        <button type="button" class="spell-tab" id="spellTabOther"></button>
+      </div>
+      <p class="spell-hint" id="spellHint"></p>
+      <div class="spell-tools">
+        <input type="search" id="spellSearch" class="sec-input" placeholder="Search a wrong or suggested word…" autocomplete="off" />
+        <select id="spellUnitFilter" class="spell-select" aria-label="Filter by unit"></select>
+        <a class="sec-dl-all" id="spellCsv" href="#">Download CSV</a>
+        <button type="button" class="upload-alt" id="spellFilesToggle">Show extracted files</button>
+      </div>
+      <div class="spell-list" id="spellList"></div>
+      <button type="button" class="upload-alt hidden" id="spellMoreBtn"></button>
+    </div>
+
+    <!-- shows the PDF page with the flagged line highlighted -->
+    <div class="spell-modal hidden" id="spellModal">
+      <div class="spell-modal-card">
+        <div class="spell-modal-head">
+          <div class="spell-modal-title" id="spellModalTitle"></div>
+          <button type="button" class="upload-alt" id="spellModalFull">Show full page</button>
+          <button type="button" class="spell-modal-close" id="spellModalClose" aria-label="Close">&times;</button>
+        </div>
+        <div class="spell-modal-body"><img id="spellModalImg" alt="The PDF page with the flagged line highlighted" /></div>
+        <div class="spell-modal-foot">Yellow = the line, red box = the word. Page numbers are PDF page numbers.</div>
+      </div>
+    </div>
     <div class="cards" id="cardsList"></div>
   </section>
 
@@ -211,7 +336,7 @@
   </div>
 
   <footer class="foot">
-    <span>Split, merge and convert — works on textbooks, scanned books, and plain documents alike.</span>
+    <span>Split, merge, convert and compress — works on textbooks, scanned books, and plain documents alike.</span>
     <span id="jobTag"></span>
   </footer>
 
@@ -225,7 +350,7 @@
         <path d="M6 6l12 12M18 6L6 18" />
       </svg>
     </button>
-    <span class="picker-title">Select pages</span>
+    <span class="picker-title" id="pickerTitle">Select pages</span>
     <span class="picker-spacer"></span>
     <button type="button" class="upload-alt" id="selectAllBtn">Select all</button>
     <button type="button" class="upload-alt" id="deselectAllBtn">Deselect all</button>
@@ -234,7 +359,26 @@
       <button type="button" data-combine="true">Combine into one PDF</button>
     </div>
   </div>
-  <div class="page-grid" id="pageGrid"></div>
+  <div class="page-picker-body">
+    <div class="page-grid" id="pageGrid"></div>
+    <aside class="sections-panel" id="sectionsPanel">
+      <h3 class="sec-h">New section</h3>
+      <label class="sec-label" for="sectionName">Lesson name</label>
+      <input type="text" id="sectionName" class="sec-input" placeholder="e.g. पाठ १ विकास र नेपाल" autocomplete="off" />
+      <label class="sec-label" for="sectionPages">Pages</label>
+      <input type="text" id="sectionPages" class="sec-input" placeholder="click pages, or type 5-12, 15" autocomplete="off" />
+      <div class="sec-count" id="sectionSelCount"></div>
+      <div class="sec-tip">Lesson ends (or starts) half-way down a page? Press <b>&#9986;</b> on that page to keep only the part you need.</div>
+      <button type="button" class="btn btn-primary" id="createSectionBtn">+ Create section</button>
+      <p class="sec-msg" id="sectionMsg"></p>
+      <div class="sec-list-head">
+        <span>Created sections</span>
+        <a class="sec-dl-all disabled" id="sectionsDownloadAll" href="#">Download all (.zip)</a>
+      </div>
+      <ul class="sec-list" id="sectionsList"></ul>
+      <button type="button" class="upload-alt" id="sectionsDoneBtn">Done — close</button>
+    </aside>
+  </div>
   <div class="page-picker-footer">
     <span class="count" id="pagePickerCount"></span>
     <button type="button" class="btn btn-primary" id="confirmPagesBtn">
@@ -246,6 +390,37 @@
   </div>
 </div>
 
-<script src="{{ url_for('static', filename='app.js') }}"></script>
+    <!-- crop one page of a section (e.g. a lesson that ends half-way down the page) -->
+    <div class="crop-modal hidden" id="cropModal">
+      <div class="crop-card">
+        <div class="crop-head">
+          <div class="crop-title" id="cropTitle"></div>
+          <div class="crop-presets">
+            <button type="button" data-preset="top">Top half</button>
+            <button type="button" data-preset="bottom">Bottom half</button>
+            <button type="button" data-preset="left">Left half</button>
+            <button type="button" data-preset="right">Right half</button>
+            <button type="button" data-preset="full">Whole page</button>
+          </div>
+          <button type="button" class="spell-modal-close" id="cropClose" aria-label="Close">&times;</button>
+        </div>
+        <div class="crop-body">
+          <div class="crop-stage" id="cropStage">
+            <img id="cropImg" alt="The page to crop" draggable="false" />
+            <div class="crop-rect" id="cropRect">
+              <i data-h="nw"></i><i data-h="n"></i><i data-h="ne"></i><i data-h="w"></i><i data-h="e"></i><i data-h="sw"></i><i data-h="s"></i><i data-h="se"></i>
+            </div>
+          </div>
+        </div>
+        <div class="crop-foot">
+          <span class="crop-info" id="cropInfo">Drag on the page to choose the part to keep.</span>
+          <button type="button" class="upload-alt" id="cropReset">Remove crop</button>
+          <button type="button" class="btn btn-primary" id="cropApply">Apply crop</button>
+        </div>
+      </div>
+    </div>
+
+
+<script src="{{ url_for('static', filename='app.js') }}?v={{ js_version or '2.0' }}"></script>
 </body>
 </html>

@@ -1,0 +1,4 @@
+ne_NP.dic / ne_NP.aff - Nepali Hunspell dictionary
+From the LibreOffice dictionaries project (Debian package hunspell-ne), licensed under MPL-2.0.
+Source: https://www.libreoffice.org  /  https://github.com/LibreOffice/dictionaries
+nepali_words.txt - Nepali word list used by the first-pass dictionary check.

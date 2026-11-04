@@ -13,6 +13,7 @@ Conversions between PDF, Word (.docx), and images (.jpg/.png).
   installed on the machine/server; see the note in README/app.py).
 """
 
+import gc
 import os
 import subprocess
 import pymupdf
@@ -20,28 +21,85 @@ from PIL import Image
 from pdf2docx import Converter
 
 
-def generate_thumbnails(input_path: str, thumbs_dir: str, width: int = 340):
+def get_pdf_page_count(input_path: str) -> int:
     """
-    Renders a small preview image (JPEG) of every page — used for the
-    visual page-picker grid. Returns the page count.
+    Returns the total page count of a PDF quickly without loading all pages into memory.
+    """
+    doc = pymupdf.open(input_path)
+    try:
+        return doc.page_count
+    finally:
+        doc.close()
+        del doc
+        gc.collect()
+
+
+def generate_single_thumbnail(input_path: str, thumbs_dir: str, page_num: int, width: int = 340) -> str:
+    """
+    Renders a small preview image (JPEG) of a single page (1-indexed) on demand.
+    Cleans up memory immediately to prevent RAM bloat on large PDFs.
+    """
+    os.makedirs(thumbs_dir, exist_ok=True)
+    fname = f"thumb_{page_num:04d}.jpg"
+    out_path = os.path.join(thumbs_dir, fname)
+    if os.path.exists(out_path):
+        return out_path
+
+    doc = pymupdf.open(input_path)
+    try:
+        if 1 <= page_num <= doc.page_count:
+            page = doc[page_num - 1]
+            rect = page.rect
+            zoom = width / rect.width if rect.width else 1
+            pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom))
+            try:
+                pix.save(out_path)
+            finally:
+                del pix
+                del page
+        else:
+            raise ValueError(f"Page {page_num} is out of bounds (1..{doc.page_count}).")
+    finally:
+        doc.close()
+        del doc
+        gc.collect()
+    return out_path
+
+
+def generate_thumbnails(input_path: str, thumbs_dir: str, width: int = 340, max_pages: int = None):
+    """
+    Renders preview images for the visual page picker.
+    If max_pages is given, only pre-renders up to that many pages upfront,
+    and returns the total page count. Remaining pages are loaded lazily on demand.
     """
     os.makedirs(thumbs_dir, exist_ok=True)
     doc = pymupdf.open(input_path)
     try:
         page_count = doc.page_count
-        for i, page in enumerate(doc):
+        render_limit = min(page_count, max_pages) if (max_pages and max_pages > 0) else page_count
+        for i in range(render_limit):
+            page = doc[i]
             rect = page.rect
             zoom = width / rect.width if rect.width else 1
             pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom))
-            pix.save(os.path.join(thumbs_dir, f"thumb_{i + 1:04d}.jpg"))
+            try:
+                pix.save(os.path.join(thumbs_dir, f"thumb_{i + 1:04d}.jpg"))
+            finally:
+                del pix
+                del page
+            if (i + 1) % 20 == 0:
+                gc.collect()
     finally:
         doc.close()
+        del doc
+        gc.collect()
     return page_count
 
 
 def pdf_to_images(input_path: str, output_dir: str, fmt: str = "jpg", dpi: int = 150):
     """
     Renders every page of input_path as an image file in output_dir.
+    Cleans up memory page-by-page.
 
     Returns a list of dicts: [{"title": "Page 1", "filename": "Page_001.jpg", "pages": "1-1"}, ...]
     """
@@ -56,14 +114,22 @@ def pdf_to_images(input_path: str, output_dir: str, fmt: str = "jpg", dpi: int =
         for i, page in enumerate(doc):
             pix = page.get_pixmap(dpi=dpi)
             fname = f"Page_{i + 1:03d}.{fmt}"
-            pix.save(os.path.join(output_dir, fname))
+            try:
+                pix.save(os.path.join(output_dir, fname))
+            finally:
+                del pix
+                del page
             results.append({
                 "title": f"Page {i + 1}",
                 "filename": fname,
                 "pages": f"{i + 1}-{i + 1}",
             })
+            if (i + 1) % 20 == 0:
+                gc.collect()
     finally:
         doc.close()
+        del doc
+        gc.collect()
 
     if not results:
         raise ValueError("This PDF has no pages to convert.")
@@ -73,29 +139,45 @@ def pdf_to_images(input_path: str, output_dir: str, fmt: str = "jpg", dpi: int =
 def images_to_pdf(image_paths, output_dir: str, output_name: str = "Combined.pdf"):
     """
     Combines one or more image files (JPG/PNG/etc.) into a single PDF,
-    in the order given.
-
-    Returns a list with one dict: [{"title": ..., "filename": ..., "pages": "1-N"}]
+    in the order given. Uses PyMuPDF when possible to stream without loading
+    all uncompressed bitmaps into memory at once.
     """
     os.makedirs(output_dir, exist_ok=True)
     if not image_paths:
         raise ValueError("No images were provided to combine.")
 
-    images = []
-    for p in image_paths:
-        img = Image.open(p)
-        if img.mode != "RGB":
-            img = img.convert("RGB")
-        images.append(img)
-
     fname = output_name if output_name.lower().endswith(".pdf") else f"{output_name}.pdf"
     out_path = os.path.join(output_dir, fname)
-    images[0].save(out_path, save_all=True, append_images=images[1:])
+
+    # Use PyMuPDF to convert each image to PDF page and merge
+    out = pymupdf.open()
+    try:
+        for p in image_paths:
+            img_doc = pymupdf.open(p)
+            try:
+                pdf_bytes = img_doc.convert_to_pdf()
+            finally:
+                img_doc.close()
+                del img_doc
+
+            single_pdf = pymupdf.open("pdf", pdf_bytes)
+            try:
+                out.insert_pdf(single_pdf)
+            finally:
+                single_pdf.close()
+                del single_pdf
+                del pdf_bytes
+
+        out.save(out_path, garbage=2, deflate=True)
+    finally:
+        out.close()
+        del out
+        gc.collect()
 
     return [{
-        "title": f"Combined PDF ({len(images)} page{'s' if len(images) != 1 else ''})",
+        "title": f"Combined PDF ({len(image_paths)} page{'s' if len(image_paths) != 1 else ''})",
         "filename": fname,
-        "pages": f"1-{len(images)}",
+        "pages": f"1-{len(image_paths)}",
     }]
 
 
