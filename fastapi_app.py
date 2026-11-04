@@ -10,6 +10,7 @@ Features:
 - Strict input validation, path sanitization, and PDF magic byte verification (%PDF-).
 """
 
+import logging
 import os
 import re
 import shutil
@@ -19,9 +20,12 @@ from typing import Optional, Literal
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, status, Query
 from fastapi.responses import FileResponse, StreamingResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
 from pdf_compressor import compress_pdf
+
+logger = logging.getLogger("fastapi_app")
 
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = BASE_DIR / "uploads"
@@ -391,6 +395,13 @@ class ChunkResponse(BaseModel):
     chunk_index: int
     total_chunks: int
     complete: bool
+    compressed: Optional[bool] = None
+    original_size_mb: Optional[float] = None
+    compressed_size_mb: Optional[float] = None
+    saved_mb: Optional[float] = None
+    savings_percent: Optional[float] = None
+    filename: Optional[str] = None
+    download_url: Optional[str] = None
 
 
 class CompressResponse(BaseModel):
@@ -435,10 +446,15 @@ async def upload_chunk(
     chunk_index: int = Form(...),
     total_chunks: int = Form(...),
     filename: str = Form("document.pdf"),
+    compress_on_complete: bool = Form(True, description="Automatically compress PDF upon assembly"),
+    mode: Literal["lossless", "visually_lossless"] = Form("visually_lossless"),
+    image_quality: int = Form(90, ge=1, le=100),
 ):
     """
     Receives file slices (e.g. 10MB each) and appends directly to disk.
-    Completely avoids buffering 300MB+ into RAM and bypasses all proxy payload caps.
+    When the final chunk is received and assembled, automatically compresses the PDF
+    on the server side right after assembly before saving, without requiring any manual
+    compression step from the user.
     """
     if not _validate_job_id(job_id):
         raise HTTPException(status_code=400, detail="Invalid job_id format.")
@@ -448,10 +464,10 @@ async def upload_chunk(
         raise HTTPException(status_code=400, detail="Only PDF files are supported.")
 
     target_path = UPLOAD_DIR / f"{job_id}_source.pdf"
-    mode = "wb" if chunk_index == 0 else "ab"
+    write_mode = "wb" if chunk_index == 0 else "ab"
 
     try:
-        with open(target_path, mode) as dest:
+        with open(target_path, write_mode) as dest:
             shutil.copyfileobj(chunk.file, dest, length=1024 * 1024)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to write chunk {chunk_index}: {exc}")
@@ -469,12 +485,70 @@ async def upload_chunk(
                     pass
                 raise HTTPException(status_code=422, detail="Invalid PDF file (missing %PDF- header).")
 
+    is_complete = (chunk_index + 1 >= total_chunks)
+
+    # Automatic compression pipeline right after assembly
+    compressed = False
+    orig_mb = None
+    comp_mb = None
+    saved_mb = None
+    savings_pct = None
+    out_name = None
+    download_url = None
+
+    if is_complete and compress_on_complete and target_path.is_file():
+        clean_name = safe_name if not safe_name.startswith("compressed_") else safe_name
+        out_name = f"compressed_{clean_name}"
+        job_output_dir = OUTPUT_DIR / job_id
+        job_output_dir.mkdir(parents=True, exist_ok=True)
+        final_output_path = job_output_dir / out_name
+        temp_comp_path = UPLOAD_DIR / f"{job_id}_compressed_tmp.pdf"
+
+        try:
+            # Run compression in threadpool to keep the async event loop unblocked
+            stats = await run_in_threadpool(
+                compress_pdf,
+                input_path=str(target_path),
+                output_path=str(temp_comp_path),
+                mode=mode,
+                image_quality=image_quality,
+            )
+
+            if temp_comp_path.is_file() and temp_comp_path.stat().st_size > 0:
+                # Provide immediate download path in output directory
+                shutil.copyfile(temp_comp_path, final_output_path)
+                # Replace the uploaded source with the compressed version
+                temp_comp_path.replace(target_path)
+
+                compressed = True
+                orig_mb = stats.get("original_size_mb")
+                comp_mb = stats.get("compressed_size_mb")
+                saved_mb = stats.get("saved_mb")
+                savings_pct = stats.get("savings_percent")
+                download_url = f"/download/{job_id}/{out_name}"
+        except Exception as exc:
+            # Safe degradation: compression failure never breaks the upload
+            logger.warning(f"Automatic compression failed for job {job_id}: {exc}")
+        finally:
+            if temp_comp_path.is_file():
+                try:
+                    temp_comp_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
     return ChunkResponse(
         status="ok",
         job_id=job_id,
         chunk_index=chunk_index,
         total_chunks=total_chunks,
-        complete=(chunk_index + 1 >= total_chunks),
+        complete=is_complete,
+        compressed=compressed,
+        original_size_mb=orig_mb,
+        compressed_size_mb=comp_mb,
+        saved_mb=saved_mb,
+        savings_percent=savings_pct,
+        filename=out_name,
+        download_url=download_url,
     )
 
 
@@ -520,7 +594,11 @@ async def compress_endpoint(
                 status_code=404,
                 detail=f"Uploaded PDF for job_id '{job_id}' not found. Please upload chunks via /upload-chunk first or attach a file directly."
             )
-        orig_name = "compressed_document.pdf"
+        existing_outputs = list((OUTPUT_DIR / job_id).glob("compressed_*.pdf")) if (OUTPUT_DIR / job_id).is_dir() else []
+        if existing_outputs:
+            orig_name = existing_outputs[0].name.replace("compressed_", "", 1)
+        else:
+            orig_name = "compressed_document.pdf"
     else:
         raise HTTPException(
             status_code=400,
