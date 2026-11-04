@@ -315,9 +315,17 @@
       fd.append('total_chunks', totalChunks);
       fd.append('filename', file.name);
 
+      if (typeof compressMode !== 'undefined') {
+        fd.append('mode', compressMode);
+      }
+      if (typeof compressQuality !== 'undefined') {
+        fd.append('image_quality', compressQuality);
+      }
+
       if (onProgress) {
         const pct = Math.round(((i + 1) / totalChunks) * 100);
-        onProgress(pct, i + 1, totalChunks);
+        const isFinishing = (i + 1 === totalChunks);
+        onProgress(pct, i + 1, totalChunks, isFinishing);
       }
 
       const res = await fetch('/upload-chunk', { method: 'POST', body: fd });
@@ -1514,8 +1522,12 @@
       if (compressPendingFile) {
         if (compressPendingFile.size > 10 * 1024 * 1024) {
           showStatus([`Preparing ${Math.round(compressPendingFile.size / (1024 * 1024))} MB chunked stream…`]);
-          const jobId = await uploadFileInChunks(compressPendingFile, (pct) => {
-            showStatus([`Streaming upload: ${Math.round(compressPendingFile.size / (1024 * 1024))} MB (${pct}%)`]);
+          const jobId = await uploadFileInChunks(compressPendingFile, (pct, cur, total, isFinishing) => {
+            if (isFinishing || pct >= 100) {
+              showStatus(['Assembling chunks & automatically optimizing PDF…', 'Deduplicating fonts and stream objects…']);
+            } else {
+              showStatus([`Streaming upload: ${Math.round(compressPendingFile.size / (1024 * 1024))} MB (${pct}%)`]);
+            }
           });
           showStatus(COMPRESS_MESSAGES);
           res = await fetch('/compress', {
