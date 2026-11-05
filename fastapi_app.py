@@ -24,7 +24,7 @@ from urllib.parse import quote
 
 import pymupdf
 import requests
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Response
+from fastapi import FastAPI, APIRouter, UploadFile, File, Form, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -571,6 +571,96 @@ async def dictionary_add(request: Request):
     if not add_custom_word(word):
         raise HTTPException(status_code=422, detail="That is not a Nepali word.")
     return {"ok": True}
+
+
+# ---------------------------------------------------- SPELL CHECK ROUTER ---
+
+spellcheck_router = APIRouter(prefix="/api/spellcheck", tags=["Spell Check"])
+
+
+@spellcheck_router.post("/analyze")
+async def analyze_pdf_spelling(request: Request):
+    """
+    Dedicated standalone spell-check analysis endpoint.
+    Accepts JSON (job_id, pdf_url, ranges) or multipart/form-data (file, job_id, ranges).
+    Extracts text, checks spelling against Devanagari lexicon,
+    and returns mistake statistics, suggestions, on-page bounding boxes, and CSV report link.
+    """
+    data, files, file = await _parse_request_data(request)
+    job_id = data.get("job_id")
+    if job_id and _valid_job_id(job_id):
+        job_output_dir = OUTPUT_DIR / job_id
+        job_output_dir.mkdir(parents=True, exist_ok=True)
+        job_input_path = _find_job_source(job_id)
+    else:
+        job_id, job_output_dir = _new_job()
+        job_input_path, _ = await _fetch_one_input(data, file, "spellcheck")
+
+    ranges_str = data.get("ranges", "")
+
+    # Preserve source for visual /page-preview/{job_id}/{page}
+    source_copy = UPLOAD_DIR / f"{job_id}_source.pdf"
+    if str(job_input_path) != str(source_copy):
+        shutil.copyfile(job_input_path, source_copy)
+
+    findings_payload = {}
+    notice = ""
+
+    def _execute():
+        nonlocal notice
+        _, notc = extract_nepali_text_hierarchy(
+            input_path=str(job_input_path),
+            output_dir=str(job_output_dir),
+            ranges_str=ranges_str,
+            with_pdf=False,
+            check_spelling=True,
+            findings_out=findings_payload,
+        )
+        notice = notc
+
+    try:
+        await run_in_threadpool(_execute)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Spell-check failed: {exc}")
+    finally:
+        gc.collect()
+
+    spellcheck_data = findings_payload.get("spellcheck")
+    if not spellcheck_data:
+        raise HTTPException(status_code=500, detail="Spell-check engine returned empty findings.")
+
+    return {
+        "status": "ok",
+        "job_id": job_id,
+        "notice": notice,
+        "csv_report_url": f"/download/{job_id}/Spellcheck_Report.csv",
+        "download_all_url": f"/download-all/{job_id}",
+        "spellcheck": spellcheck_data,
+    }
+
+
+@spellcheck_router.post("/whitelist/add")
+async def add_whitelist_word(request: Request):
+    """
+    Adds a custom Nepali word to the dictionary whitelist so it is not flagged again.
+    Accepts JSON {"word": "..."} or Form data word="...".
+    """
+    data, _, _ = await _parse_request_data(request)
+    word = (data.get("word") or "").strip()
+    if not word:
+        raise HTTPException(status_code=400, detail="Missing 'word' parameter.")
+    if not add_custom_word(word):
+        raise HTTPException(status_code=422, detail="That is not a Nepali word.")
+    return {
+        "status": "ok",
+        "message": f"'{word}' added to custom dictionary.",
+        "ok": True,
+    }
+
+
+app.include_router(spellcheck_router)
 
 
 # ------------------------------------------------------ MANUAL SECTIONS ---
