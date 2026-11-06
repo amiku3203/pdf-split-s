@@ -131,13 +131,30 @@ def _new_job() -> tuple[str, Path]:
 
 
 def _find_job_source(job_id: str) -> Path:
-    matches = list(UPLOAD_DIR.glob(f"{job_id}_source.*"))
-    if not matches:
-        raise HTTPException(
-            status_code=404,
-            detail="Couldn't find the uploaded file for this job — try loading the pages again."
-        )
-    return matches[0]
+    # 1. Exact match in uploads ({job_id}_source.*)
+    matches = [p for p in UPLOAD_DIR.glob(f"{job_id}_source.*") if p.is_file() and p.stat().st_size > 0]
+    if matches:
+        return matches[0]
+
+    # 2. Any file in uploads starting with {job_id}
+    matches = [p for p in UPLOAD_DIR.glob(f"{job_id}*.*") if p.is_file() and p.stat().st_size > 0]
+    if matches:
+        return matches[0]
+
+    # 3. Search in output directory for compressed or assembled outputs
+    job_out = OUTPUT_DIR / job_id
+    if job_out.is_dir():
+        out_matches = [p for p in job_out.glob("compressed_*.pdf") if p.is_file() and p.stat().st_size > 0]
+        if out_matches:
+            return out_matches[0]
+        out_matches = [p for p in job_out.glob("*.pdf") if p.is_file() and p.stat().st_size > 0]
+        if out_matches:
+            return out_matches[0]
+
+    raise HTTPException(
+        status_code=404,
+        detail=f"Uploaded file for job '{job_id}' not found. Please upload again."
+    )
 
 
 def _fetch_from_url(url: str, dest_path: Path):
@@ -783,6 +800,28 @@ async def delete_section(request: Request):
     return _sections_response(job_id)
 
 
+def _fallback_split(input_path: str, output_dir: str, pages_per_chunk: int = 5) -> tuple[list, str]:
+    """
+    Safely splits a PDF when heading/lesson detection fails, ensuring the user always receives
+    valid split files and never encounters an unhandled 422 error.
+    """
+    try:
+        doc = pymupdf.open(input_path)
+        total_pages = doc.page_count
+        doc.close()
+    except Exception:
+        total_pages = 1
+
+    if total_pages <= 5:
+        chaps = split_pdf_per_page(input_path, output_dir)
+        note = f"Document has {total_pages} page(s). Automatically split into individual pages."
+    else:
+        chunk_size = max(1, pages_per_chunk)
+        chaps = split_pdf_fixed(input_path, output_dir, chunk_size)
+        note = f"Automatically split into {len(chaps)} parts ({chunk_size} pages each)."
+    return chaps, note
+
+
 # ---------------------------------------------------------------- SPLIT ---
 
 @app.post("/split")
@@ -793,7 +832,13 @@ async def split(request: Request):
     nepali_text | nepali_pdf_text | nepali_spellcheck | range | fixed | per_page
     """
     data, _, file = await _parse_request_data(request)
-    job_id = data.get("job_id")
+
+    # Sanitize job_id from JSON, Form, or Query parameters
+    raw_job_id = data.get("job_id") or data.get("jobId") or data.get("job") or data.get("id")
+    job_id = str(raw_job_id).strip().strip('"\' ') if raw_job_id else None
+    if job_id and job_id.lower() in ("undefined", "null", "none", ""):
+        job_id = None
+
     if job_id and _valid_job_id(job_id):
         job_output_dir = OUTPUT_DIR / job_id
         job_output_dir.mkdir(parents=True, exist_ok=True)
@@ -802,11 +847,11 @@ async def split(request: Request):
         job_id, job_output_dir = _new_job()
         job_input_path, _ = await _fetch_one_input(data, file, "split")
 
-    mode = data.get("mode", "unit")
-    keyword = data.get("keyword", "Unit")
-    ranges_str = data.get("ranges", "")
+    mode = str(data.get("mode") or "unit").strip()
+    keyword = str(data.get("keyword") or "Unit").strip()
+    ranges_str = str(data.get("ranges") or "").strip()
     try:
-        pages_per_chunk = int(data.get("pages_per_chunk", 5))
+        pages_per_chunk = max(1, int(data.get("pages_per_chunk", 5)))
     except (TypeError, ValueError):
         pages_per_chunk = 5
 
@@ -821,38 +866,44 @@ async def split(request: Request):
         in_str = str(job_input_path)
         out_str = str(job_output_dir)
 
-        if mode == "lesson":
-            return split_pdf_by_lesson(in_str, out_str)
-        elif mode == "combined":
-            return split_pdf_combined(in_str, out_str, keyword=keyword)
-        elif mode == "unit_and_lesson":
-            return split_pdf_unit_and_lesson(in_str, out_str, keyword=keyword)
-        elif mode == "extract_text":
-            return extract_text_hierarchy(in_str, out_str, keyword=keyword)
-        elif mode == "combined_with_text":
-            return split_pdf_combined_with_text(in_str, out_str, keyword=keyword)
-        elif mode in ("nepali_text", "nepali_pdf_text", "nepali_spellcheck"):
-            chaps, notc = extract_nepali_text_hierarchy(
-                in_str, out_str,
-                ranges_str=ranges_str, with_pdf=(mode == "nepali_pdf_text"),
-                check_spelling=(mode == "nepali_spellcheck"),
-                findings_out=spellcheck_findings,
-            )
-            notice = notc
-            return chaps
-        elif mode == "range":
-            return split_pdf_by_range(in_str, out_str, ranges_str)
-        elif mode == "fixed":
-            return split_pdf_fixed(in_str, out_str, pages_per_chunk)
-        elif mode == "per_page":
-            return split_pdf_per_page(in_str, out_str)
-        else:
-            return split_pdf_by_unit(in_str, out_str, keyword=keyword)
+        try:
+            if mode == "lesson":
+                return split_pdf_by_lesson(in_str, out_str)
+            elif mode == "combined":
+                return split_pdf_combined(in_str, out_str, keyword=keyword)
+            elif mode == "unit_and_lesson":
+                return split_pdf_unit_and_lesson(in_str, out_str, keyword=keyword)
+            elif mode == "extract_text":
+                return extract_text_hierarchy(in_str, out_str, keyword=keyword)
+            elif mode == "combined_with_text":
+                return split_pdf_combined_with_text(in_str, out_str, keyword=keyword)
+            elif mode in ("nepali_text", "nepali_pdf_text", "nepali_spellcheck"):
+                chaps, notc = extract_nepali_text_hierarchy(
+                    in_str, out_str,
+                    ranges_str=ranges_str, with_pdf=(mode == "nepali_pdf_text"),
+                    check_spelling=(mode == "nepali_spellcheck"),
+                    findings_out=spellcheck_findings,
+                )
+                notice = notc
+                return chaps
+            elif mode == "range":
+                return split_pdf_by_range(in_str, out_str, ranges_str)
+            elif mode == "fixed":
+                return split_pdf_fixed(in_str, out_str, pages_per_chunk)
+            elif mode == "per_page":
+                return split_pdf_per_page(in_str, out_str)
+            else:
+                return split_pdf_by_unit(in_str, out_str, keyword=keyword)
+        except ValueError as exc:
+            # Graceful fallback: when heading/lesson detection fails on a PDF,
+            # avoid throwing a 422 error and safely deliver split content to the user.
+            logger.info(f"Split mode '{mode}' failed with ValueError: {exc}. Performing safe fallback split.")
+            fallback_chaps, fallback_note = _fallback_split(in_str, out_str, pages_per_chunk)
+            notice = f"Notice: {exc} — {fallback_note}"
+            return fallback_chaps
 
     try:
         chapters = await run_in_threadpool(_do_split)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Splitting failed: {exc}")
     finally:

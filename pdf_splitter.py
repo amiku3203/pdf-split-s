@@ -40,27 +40,45 @@ def _clean_filename(text: str, fallback: str) -> str:
 def _find_unit_start_pages(reader: PdfReader, keyword: str = "Unit"):
     """
     Return the 0-indexed page numbers where a `keyword` heading (e.g. "Unit")
-    is immediately followed by a number — that's a real chapter heading.
-
-    A bare "Unit" line that is NOT followed by a number is treated as a
-    false positive (e.g. a Table-of-Contents column header like
-    "Unit / Content / Page" split across separate lines) and skipped.
+    appears as a real chapter heading.
+    Matches:
+    - Inline headings: "Unit 1", "Unit 1: Introduction", "UNIT - 01", "Chapter 2"
+    - Two-line headings: "Unit" on line 1 followed by digits on line 2
+    Ignores running headers that repeat the current unit number on subsequent pages.
     """
     starts = []
+    inline_pat = re.compile(r"^" + re.escape(keyword) + r"\s*[-:–.]?\s*(\d{1,3})", re.IGNORECASE)
+    kw_exact = keyword.lower()
+    last_unit_num = None
+
     for i, page in enumerate(reader.pages):
         text = page.extract_text() or ""
-        lines = [l.strip() for l in text.split("\n")]
+        lines = [l.strip() for l in text.split("\n") if l.strip()]
+        matched = False
         for j, line in enumerate(lines):
-            if line.lower() != keyword.lower():
-                continue
-            # look at the next couple of lines for one that starts with digits
-            for k in range(j + 1, min(j + 3, len(lines))):
-                if re.match(r"^\d{1,3}", lines[k]):
+            # Check inline match first (e.g. "Unit 1: Title", "Unit 1")
+            m_inline = inline_pat.match(line)
+            if m_inline:
+                unum = int(m_inline.group(1))
+                if unum != last_unit_num:
                     starts.append(i)
+                    last_unit_num = unum
+                matched = True
+                break
+
+            # Check standalone keyword match where number is on the next line
+            if line.lower() == kw_exact:
+                for k in range(j + 1, min(j + 3, len(lines))):
+                    m_num = re.match(r"^(\d{1,3})", lines[k])
+                    if m_num:
+                        unum = int(m_num.group(1))
+                        if unum != last_unit_num:
+                            starts.append(i)
+                            last_unit_num = unum
+                        matched = True
+                        break
+                if matched:
                     break
-            else:
-                continue
-            break  # only count the page once even if keyword repeats
     return starts
 
 
@@ -674,10 +692,11 @@ def _parse_page_ranges(ranges_str: str, total_pages: int):
     """
     Parse a string like "1-5, 6-10, 15-end" (1-indexed, inclusive) into a
     list of (start_0idx, end_0idx_exclusive) tuples.
+    Safely auto-clamps ranges within [1, total_pages] and defaults to all pages if empty.
     """
-    parts = [p.strip() for p in ranges_str.split(",") if p.strip()]
+    parts = [p.strip() for p in (ranges_str or "").split(",") if p.strip()]
     if not parts:
-        raise ValueError("No page ranges given (e.g. \"1-5, 6-10\").")
+        return [(0, total_pages)]
 
     parsed = []
     for part in parts:
@@ -688,11 +707,16 @@ def _parse_page_ranges(ranges_str: str, total_pages: int):
         elif re.match(r"^\d+$", part):
             start = end = int(part)
         else:
-            raise ValueError(f'Could not understand the range "{part}". Use something like "1-5, 6-10".')
+            continue
 
-        if start < 1 or end > total_pages or start > end:
-            raise ValueError(f'Range "{part}" is out of bounds for a {total_pages}-page PDF.')
+        if start > total_pages:
+            continue
+        start = max(1, start)
+        end = min(total_pages, max(start, end))
         parsed.append((start - 1, end))  # 0-indexed, end exclusive
+
+    if not parsed:
+        return [(0, total_pages)]
     return parsed
 
 
